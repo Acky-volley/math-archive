@@ -1,5 +1,18 @@
 [
   {
+    "id": "q-1794702890129",
+    "title": "変数係数の2階線形微分方程式：斉次解＋特殊解",
+    "category": "微分積分学",
+    "difficulty": 4,
+    "tags": ["微分方程式"],
+    "problem": "次の微分方程式の一般解を求めよ。\n\n$(1)\\space y'' - \\dfrac{2x}{x^2-1}y' + \\dfrac{2}{x^2-1}y = x^2-1$\n\n$(2)\\space xy''- (x+1)y' + y = x^2$",
+    "hint": "R16：3次以上の方程式の解は、まず自明な解を考え、次に有力候補を代入せよR34：何を置換するかの定石をストックせよ\nR117：$f(x)g(x)、f(x)/g(x)、{f(x)}ⁿ$ の微分はできるようにすべし",
+    "solution": "(1) 与えられた微分方程式を①とする。まず、対応する同次微分方程式$$y'' - \\dfrac{2x}{x^2-1}y' + \\dfrac{2}{x^2-1}y = 0 \\quad \\cdots \\text{②}$$を考える。$y = x$ を②の左辺に代入すると、$y' = 1, y'' = 0$ より$$0 - \\dfrac{2x}{x^2-1}\\cdot 1 + \\dfrac{2}{x^2-1}\\cdot x = 0$$となり、$y = x$ は②の解である。そこで、$y = ux$（$u$ は $x$ の関数）とおくと、$y' = u'x + u, \\ y'' = u''x + 2u'$ であるから、これらを①に代入して整理すると、$$(u''x + 2u') - \\dfrac{2x}{x^2-1}(u'x + u) + \\dfrac{2ux}{x^2-1} = x^2-1$$$$x u'' + \\left(2 - \\dfrac{2x^2}{x^2-1}\\right)u' = x^2-1$$$$x u'' - \\dfrac{2}{x^2-1}u' = x^2-1$$ここで $u' = p$ とおくと、$u'' = p'$ より、$$x p' - \\dfrac{2}{x^2-1}p = x^2-1 \\quad \\cdots \\text{③}$$まず、同次方程式 $x p' - \\dfrac{2}{x^2-1}p = 0$ を解く。変数分離すると、$$\\dfrac{1}{p}dp = \\dfrac{2}{x(x^2-1)}dx = \\left(-\\dfrac{2}{x} + \\dfrac{1}{x-1} + \\dfrac{1}{x+1}\\right)dx$$両辺を積分して整理すると、$$\\log\\vert{}p\\vert{} = -2\\log\\vert{}x\\vert{} + \\log\\vert{}x-1\\vert{} + \\log\\vert{}x+1\\vert{} + C = \\log\\left\\vert{}\\dfrac{x^2-1}{x^2}\\right\\vert{} + C$$よって、$p = C_1 \\dfrac{x^2-1}{x^2}$（$C_1$ は任意定数）となる。定数変化法により、$p = C(x)\\dfrac{x^2-1}{x^2}$ とおいて③に代入すると、$$x \\cdot C'(x)\\dfrac{x^2-1}{x^2} = x^2-1 \\implies C'(x) = x$$両辺を積分すると、$C(x) = \\dfrac{1}{2}x^2 + C_1$ となる。よって $u' = p$ は、$$u' = \\left(\\dfrac{1}{2}x^2 + C_1\\right)\\dfrac{x^2-1}{x^2} = \\dfrac{1}{2}(x^2 - 1) + C_1\\left(1 - \\dfrac{1}{x^2}\\right)$$両辺を $x$ で積分すると、$$u = \\dfrac{1}{6}x^3 - \\dfrac{1}{2}x + C_1\\left(x + \\dfrac{1}{x}\\right) + C_2 \\quad (C_1, C_2 \\text{ は任意定数})$$したがって、求める一般解は $y = ux$ より、$$\\boldsymbol{y = C_1(x^2 + 1) + C_2 x + \\dfrac{1}{6}x^4 - \\dfrac{1}{2}x^2} \\quad \\boldsymbol{(C_1, C_2 \\text{ は任意定数})}$$\n\n(2)与えられた微分方程式の両辺を $x$ で割り、①とする。\n$$y'' - \\dfrac{x+1}{x}y' + \\dfrac{1}{x}y = x \\quad \\cdots \\text{①}$$まず、対応する同次微分方程式$$y'' - \\dfrac{x+1}{x}y' + \\dfrac{1}{x}y = 0 \\quad \\cdots \\text{②}$$を考える。$y = e^x$ を②の左辺に代入すると、$y' = e^x, y'' = e^x$ より$$e^x - \\dfrac{x+1}{x}e^x + \\dfrac{1}{x}e^x = \\left(1 - \\dfrac{x+1}{x} + \\dfrac{1}{x}\\right)e^x = 0$$となり、$y = e^x$ は②の解である。そこで、$y = u e^x$（$u$ は $x$ の関数）とおくと、$$y' = (u' + u)e^x, \\quad y'' = (u'' + 2u' + u)e^x$$これらを①に代入して整理すると、\n$$\\{(u''+2u'+u)-\\dfrac{x+1}{x}(u'+u)+\\dfrac{1}{x}u\\}e^x=x$$\n$$\\{u''+\\left(2-\\dfrac{x+1}{x}\\right)u'\\}e^x=x$$\n$$u'' + \\dfrac{x-1}{x}u' = x e^{-x}$$\nここで $u' = p$ とおくと、$u'' = p'$ より、$$p' + \\left(1 - \\dfrac{1}{x}\\right)p = x e^{-x} \\quad \\cdots \\text{③}$$まず、同次方程式 $p' + \\left(1 - \\dfrac{1}{x}\\right)p = 0$ を解く。変数分離すると、$$\\dfrac{1}{p}dp = \\left(\\dfrac{1}{x} - 1\\right)dx$$両辺を積分して整理すると、$\\log\\vert{}p\\vert{} = \\log\\vert{}x\\vert{} - x + C$ より、$p = C_1 x e^{-x}$（$C_1$ は任意定数）となる。定数変化法により、$p = C(x) x e^{-x}$ とおいて③に代入すると、$$C'(x) x e^{-x} = x e^{-x} \\implies C'(x) = 1$$両辺を積分すると、$C(x) = x + C_1$ となる。よって $u' = p$ は、$$u' = (x + C_1)x e^{-x} = (x^2 + C_1 x)e^{-x}$$両辺を $x$ で積分する。部分積分法を用いると、$$\\int x^2 e^{-x} dx = -(x^2 + 2x + 2)e^{-x}, \\quad \\int x e^{-x} dx = -(x + 1)e^{-x}$$であるから、$$u = -(x^2 + 2x + 2)e^{-x} - C_1(x + 1)e^{-x} + C_2 \\quad (C_1, C_2 \\text{ は任意定数})$$ここで $-C_1$ を改めて $C_1$ とおき直すと、求める一般解は $y = u e^x$ より、$$\\boldsymbol{y = C_1(x + 1) + C_2 e^x - x^2 - 2x - 2} \\quad \\boldsymbol{(C_1, C_2 \\text{ は任意定数})}$$",
+    "alternative": "",
+    "createdAt": "2026-11-15T00:34:50.128Z",
+    "updatedAt": "2026-11-15T00:34:50.128Z"
+  },
+  {
     "id": "sample-1",
     "title": "定積分と区分求積法の応用",
     "category": "数学III・C",
