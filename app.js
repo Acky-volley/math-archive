@@ -88,8 +88,22 @@ class MathArchiveApp {
     this.loadGitHubConfig();
     await this.loadData();
     this.bindEvents();
+    this.renderMathPalette();
     this.render();
     this.handleHashChange();
+  }
+
+  renderMathPalette() {
+    const palette = document.querySelector('.palette-buttons');
+    if (palette && window.renderMathInElement) {
+      renderMathInElement(palette, {
+        delimiters: [
+          { left: "$$", right: "$$", display: true },
+          { left: "$", right: "$", display: false }
+        ],
+        throwOnError: false
+      });
+    }
   }
 
   // --------------------------------------------------------
@@ -406,34 +420,174 @@ class MathArchiveApp {
   }
 
   // --------------------------------------------------------
-  // 数式・Markdown レンダリング補助
+  // 数式・Markdown レンダリング補助 (連立方程式・複数行数式完全対応)
   // --------------------------------------------------------
+  normalizeLatex(latex, displayMode = false) {
+    if (!latex) return '';
+    let s = latex.trim();
+
+    // 1. 日本語IME由来の全角バックスラッシュを半角に正規化
+    s = s.replace(/＼/g, '\\');
+
+    // 2. \left{ や \right} のバックスラッシュ抜けを自動補正 (\left\{, \right\})
+    s = s.replace(/\\left\s*\{/g, '\\left\\{');
+    s = s.replace(/\\right\s*\}/g, '\\right\\}');
+
+    // 3. \systeme{eq1, eq2, ...} 記法を \begin{cases} ... \end{cases} に変換
+    s = s.replace(/\\systeme(?:\[[^\]]*\])?\{([^{}]+)\}/g, (_, body) => {
+      const rows = body.split(',').map(r => r.trim()).filter(Boolean).join(' \\\\ ');
+      return `\\begin{cases} ${rows} \\end{cases}`;
+    });
+
+    // 4. \begin{numcases}{prefix} ... \end{numcases} / subnumcases 対応
+    s = s.replace(/\\begin\{(sub)?numcases\}\{([^{}]*)\}([\s\S]*?)\\end\{(sub)?numcases\}/g, (_, _s1, prefix, body) => {
+      return `${prefix}\\begin{dcases}${body}\\end{dcases}`;
+    });
+
+    // 5. \begin{empheq}[left=...]{align} ... \end{empheq} 対応
+    s = s.replace(/\\begin\{empheq\}(?:\[[^\]]*\])?\{[a-zA-Z*]+\}([\s\S]*?)\\end\{empheq\}/g, (_, body) => {
+      return `\\left\\{\\begin{aligned}${body}\\end{aligned}\\right.`;
+    });
+
+    // 6. \begin{eqnarray} / \begin{eqnarray*} を \begin{aligned} に変換 (KaTeX非対応環境の吸収)
+    s = s.replace(/\\begin\{eqnarray\*?\}([\s\S]*?)\\end\{eqnarray\*?\}/g, (_, body) => {
+      const converted = body.replace(/&\s*([^&\\\n]+?)\s*&/g, '&$1');
+      return `\\begin{aligned}${converted}\\end{aligned}`;
+    });
+
+    // 7. \begin{equation} / \begin{equation*} を剥がす
+    s = s.replace(/\\begin\{equation\*?\}([\s\S]*?)\\end\{equation\*?\}/g, '$1');
+
+    // 8. \begin{array} の直後に列指定 {l} 等が省略されている場合は {llllllll} を補完
+    s = s.replace(/\\begin\{array\}(?!\s*\{)/g, '\\begin{array}{llllllll}');
+
+    // 9. インラインモードまたは \left 内部での align / gather 環境を aligned / gathered に変換
+    if (!displayMode || /\\left\b/.test(s)) {
+      s = s.replace(/\\begin\{align\*?\}/g, '\\begin{aligned}')
+           .replace(/\\end\{align\*?\}/g, '\\end{aligned}')
+           .replace(/\\begin\{gather\*?\}/g, '\\begin{gathered}')
+           .replace(/\\end\{gather\*?\}/g, '\\end{gathered}');
+    }
+
+    // 10. 複数行環境内で、行末の単一「\」(改行前のバックスラッシュ1個ミス) を「\\」に補正
+    s = s.replace(/(?<!\\)\\[ \t]*\n/g, '\\\\\n');
+
+    // 11. cases / dcases / rcases / array / aligned / gathered 等で改行のみで「\\」が省略されている場合の自動補完
+    const fixMissingLineBreaks = (input, envPattern) => {
+      const regex = new RegExp(`\\\\begin\\{(${envPattern})\\}(\\{[^{}]*\\})?([\\s\\S]*?)\\\\end\\{\\1\\}`, 'g');
+      return input.replace(regex, (match, env, colSpec, body) => {
+        if (/\\begin\{/.test(body)) return match;
+        const lines = body.split('\n');
+        const nonEmptyIndices = [];
+        lines.forEach((line, idx) => {
+          if (line.trim().length > 0) nonEmptyIndices.push(idx);
+        });
+        if (nonEmptyIndices.length >= 2) {
+          for (let i = 0; i < nonEmptyIndices.length - 1; i++) {
+            const lineIdx = nonEmptyIndices[i];
+            const trimmed = lines[lineIdx].trim();
+            if (!/(\\\\(?:\s*\[[^\]]*\])?|\\cr)\s*$/.test(trimmed)) {
+              lines[lineIdx] = lines[lineIdx].replace(/\s*$/, ' \\\\');
+            }
+          }
+        }
+        return `\\begin{${env}}${colSpec || ''}${lines.join('\n')}\\end{${env}}`;
+      });
+    };
+    s = fixMissingLineBreaks(s, 'cases|dcases|rcases|array');
+    s = fixMissingLineBreaks(s, 'aligned|gathered|align\\*?');
+
+    // 12. cases / aligned / array 等やインライン数式内の \tag{...} をエラーにならない表記に変換
+    if (!displayMode || /\\begin\{(cases|dcases|rcases|aligned|gathered|array|pmatrix|bmatrix|matrix)\}/.test(s)) {
+      s = s.replace(/\\tag\*?\{([^{}]*)\}/g, (_, label) => {
+        const clean = label.trim();
+        if (/^[①-⑳()]/.test(clean)) {
+          return `\\quad \\text{${clean}}`;
+        }
+        return `\\quad \\text{(${clean})}`;
+      });
+    }
+
+    return s;
+  }
+
   renderMarkdownAndKaTeX(text, targetEl) {
     if (!text || !text.trim()) {
       targetEl.innerHTML = '';
       return;
     }
 
-    // marked で Markdown を HTML に変換
-    const rawHtml = marked.parse(text, {
+    let processed = text.replace(/\r\n?/g, '\n');
+
+    // 1. コードブロック (`...`, ```...```) を一時退避
+    const codeTokens = [];
+    const addCodeToken = (code) => {
+      const id = codeTokens.length;
+      codeTokens.push(code);
+      return `%%CODETOKEN${id}%%`;
+    };
+    processed = processed.replace(/```[\s\S]*?```/g, (m) => addCodeToken(m));
+    processed = processed.replace(/`[^`\n]+`/g, (m) => addCodeToken(m));
+
+    // 2. Marked が `\\` や `\{` や `_` や改行を破壊する前に数式ブロックを抽出して保護
+    const mathTokens = [];
+    const addMathToken = (math, display) => {
+      const id = mathTokens.length;
+      mathTokens.push({ math, display });
+      return `%%MATHTOKEN${id}%%`;
+    };
+
+    // (a) $$ ... $$ (別行数式)
+    processed = processed.replace(/\$\$([\s\S]+?)\$\$/g, (_, math) => addMathToken(math, true));
+
+    // (b) \[ ... \] (別行数式)
+    processed = processed.replace(/\\\[([\s\S]+?)\\\]/g, (_, math) => addMathToken(math, true));
+
+    // (c) \( ... \) (インライン数式)
+    processed = processed.replace(/\\\(([\s\S]+?)\\\)/g, (_, math) => addMathToken(math, false));
+
+    // (d) $ ... $ (インライン・複数行数式)
+    processed = processed.replace(/(?<!\\)\$(?!\$)((?:\\[\s\S]|[^$\\])+?)\$/g, (_, math) => addMathToken(math, false));
+
+    // (e) $ や $$ で囲まれていない裸の \left\{ ... \right. (連立方程式など)
+    processed = processed.replace(/\\left\s*(?:\\\{|\{)[\s\S]*?\\right\s*(?:\.|\\\}|\})/g, (m) => addMathToken(m, true));
+
+    // (f) $ や $$ で囲まれていない裸の LaTeX 環境 (\begin{cases}...\end{cases} 等)
+    const bareEnvRegex = /\\begin\{(cases|dcases|rcases|numcases|subnumcases|empheq|align\*?|aligned|alignat\*?|alignedat|gather\*?|gathered|equation\*?|eqnarray\*?|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix)\}[\s\S]*?\\end\{\1\}/g;
+    processed = processed.replace(bareEnvRegex, (m) => addMathToken(m, true));
+
+    // (g) 裸の \systeme{...}
+    processed = processed.replace(/\\systeme(?:\[[^\]]*\])?\{[^{}]+\}/g, (m) => addMathToken(m, true));
+
+    // 3. コードブロックを戻してから Markdown を HTML に変換
+    processed = processed.replace(/%%CODETOKEN(\d+)%%/g, (_, idx) => codeTokens[Number(idx)] || '');
+    let html = marked.parse(processed, {
       breaks: true,
       gfm: true
     });
-    targetEl.innerHTML = rawHtml;
 
-    // KaTeX auto-render で数式を変換
-    if (window.renderMathInElement) {
-      renderMathInElement(targetEl, {
-        delimiters: [
-          { left: "$$", right: "$$", display: true },
-          { left: "\\[", right: "\\]", display: true },
-          { left: "$", right: "$", display: false },
-          { left: "\\(", right: "\\)", display: false }
-        ],
-        throwOnError: false,
-        errorColor: '#ef4444'
-      });
-    }
+    // 4. 保護していた数式トークンを KaTeX でレンダリングして埋め込む
+    html = html.replace(/%%MATHTOKEN(\d+)%%/g, (_, idxStr) => {
+      const token = mathTokens[Number(idxStr)];
+      if (!token) return '';
+      const normalized = this.normalizeLatex(token.math, token.display);
+      if (window.katex) {
+        try {
+          return window.katex.renderToString(normalized, {
+            displayMode: token.display,
+            throwOnError: false,
+            errorColor: '#ef4444',
+            strict: false,
+            trust: true
+          });
+        } catch (e) {
+          console.warn('KaTeX render error:', e);
+        }
+      }
+      return token.display ? `$$${this.escapeHtml(normalized)}$$` : `$${this.escapeHtml(normalized)}$`;
+    });
+
+    targetEl.innerHTML = html;
   }
 
   bindEditorPreview(textareaId, previewId) {

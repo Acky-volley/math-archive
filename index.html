@@ -12,8 +12,8 @@
   
   <!-- KaTeX (数式レンダリング) -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
   
   <!-- Marked.js (Markdown変換) -->
   <script src="https://cdn.jsdelivr.net/npm/marked@13.0.2/marked.min.js"></script>
@@ -273,14 +273,17 @@
                   <span class="palette-title"><i data-lucide="sparkles"></i> 数式クイック入力ツールバー (クリックでカーソル位置に挿入)</span>
                 </div>
                 <div class="palette-buttons">
-                  <button type="button" class="btn-math" data-insert="$\frac{a}{b}$" title="分数">$$\frac{a}{b}$$</button>
-                  <button type="button" class="btn-math" data-insert="$x^{2}$" title="上付き・べき乗">$$x^2$$</button>
-                  <button type="button" class="btn-math" data-insert="$a_{n}$" title="下付き">$$a_n$$</button>
-                  <button type="button" class="btn-math" data-insert="$\sqrt{x}$" title="平方根">$$\sqrt{x}$$</button>
-                  <button type="button" class="btn-math" data-insert="$\int_{a}^{b} f(x) \, dx$" title="定積分">$$\int_a^b$$</button>
-                  <button type="button" class="btn-math" data-insert="$\lim_{n \to \infty}$" title="極限">$$\lim$$</button>
-                  <button type="button" class="btn-math" data-insert="$\sum_{k=1}^{n}$" title="シグマ">$$\sum$$</button>
-                  <button type="button" class="btn-math" data-insert="$\begin{pmatrix} a & b \\ c & d \end{pmatrix}$" title="2x2行列">$$[\cdot]$$</button>
+                  <button type="button" class="btn-math" data-insert="$$&#10;\begin{cases}&#10;x + y = 1 \\&#10;2x - y = 3&#10;\end{cases}&#10;$$" title="連立方程式 (cases)">$\{\begin{smallmatrix}a\\b\end{smallmatrix}$ 連立方程式</button>
+                  <button type="button" class="btn-math" data-insert="$$&#10;\begin{cases}&#10;x + y = 1 & \cdots \text{①} \\&#10;2x - y = 3 & \cdots \text{②}&#10;\end{cases}&#10;$$" title="番号付き連立方程式 (①・②)">$\{\begin{smallmatrix}\text{①}\\\text{②}\end{smallmatrix}$ 連立(番号)</button>
+                  <button type="button" class="btn-math" data-insert="$$&#10;\begin{aligned}&#10;f(x) &= ... \\&#10;     &= ...&#10;\end{aligned}&#10;$$" title="複数行数式揃え (aligned)">$\begin{smallmatrix}=\\=\end{smallmatrix}$ 式揃え</button>
+                  <button type="button" class="btn-math" data-insert="$\frac{a}{b}$" title="分数">$\frac{a}{b}$</button>
+                  <button type="button" class="btn-math" data-insert="$x^{2}$" title="上付き・べき乗">$x^2$</button>
+                  <button type="button" class="btn-math" data-insert="$a_{n}$" title="下付き">$a_n$</button>
+                  <button type="button" class="btn-math" data-insert="$\sqrt{x}$" title="平方根">$\sqrt{x}$</button>
+                  <button type="button" class="btn-math" data-insert="$\int_{a}^{b} f(x) \, dx$" title="定積分">$\int_a^b$</button>
+                  <button type="button" class="btn-math" data-insert="$\lim_{n \to \infty}$" title="極限">$\lim$</button>
+                  <button type="button" class="btn-math" data-insert="$\sum_{k=1}^{n}$" title="シグマ">$\sum$</button>
+                  <button type="button" class="btn-math" data-insert="$\begin{pmatrix} a & b \\ c & d \end{pmatrix}$" title="2x2行列">$\begin{pmatrix}a&b\\c&d\end{pmatrix}$</button>
                   <button type="button" class="btn-math" data-insert="\alpha" title="アルファ">$\alpha$</button>
                   <button type="button" class="btn-math" data-insert="\beta" title="ベータ">$\beta$</button>
                   <button type="button" class="btn-math" data-insert="\theta" title="シータ">$\theta$</button>
@@ -290,7 +293,6 @@
                   <button type="button" class="btn-math" data-insert="\leqq" title="以下">$\leqq$</button>
                   <button type="button" class="btn-math" data-insert="\geqq" title="以上">$\geqq$</button>
                   <button type="button" class="btn-math" data-insert="\neq" title="等しくない">$\neq$</button>
-                  <button type="button" class="btn-math" data-insert="$$&#10;\begin{aligned}&#10;f(x) &= ... \\&#10;     &= ...&#10;\end{aligned}&#10;$$" title="複数行数式揃え (aligned)">$$\begin{aligned}= \end{aligned}$$</button>
                 </div>
               </div>
 
