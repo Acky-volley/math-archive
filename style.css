@@ -1010,6 +1010,37 @@ body.theme-dark .hint-header { color: #f59e0b; }
   color: var(--primary);
 }
 
+/* 増減表・Markdownテーブルのスタイリング */
+.math-render-target table {
+  border-collapse: collapse;
+  margin: 1rem auto;
+  background: var(--bg-surface);
+  border: 1.5px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  font-size: 0.95rem;
+}
+
+.math-render-target th,
+.math-render-target td {
+  border: 1px solid var(--border-color);
+  padding: 0.5rem 0.9rem;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.math-render-target thead th {
+  background: var(--bg-subtle);
+  font-weight: 600;
+}
+
+.math-render-target tr th:first-child,
+.math-render-target tr td:first-child {
+  background: var(--bg-subtle);
+  font-weight: 600;
+  border-right: 2px solid var(--border-color);
+}
+
 /* KaTeX 数式表示の最適化 */
 .katex-display {
   margin: 1rem 0 !important;

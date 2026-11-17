@@ -426,42 +426,54 @@ class MathArchiveApp {
     if (!latex) return '';
     let s = latex.trim();
 
-    // 1. 日本語IME由来の全角バックスラッシュを半角に正規化
-    s = s.replace(/＼/g, '\\');
+    // 1. 日本語IME由来の全角バックスラッシュや矢印記号を正規化 (増減表対応)
+    s = s.replace(/＼/g, '\\')
+         .replace(/↗/g, '\\nearrow ')
+         .replace(/↘/g, '\\searrow ')
+         .replace(/↖/g, '\\nwarrow ')
+         .replace(/↙/g, '\\swarrow ')
+         .replace(/⤴/g, '\\hookrightarrow ')
+         .replace(/⤵/g, '\\curvearrowright ');
 
     // 2. \left{ や \right} のバックスラッシュ抜けを自動補正 (\left\{, \right\})
     s = s.replace(/\\left\s*\{/g, '\\left\\{');
     s = s.replace(/\\right\s*\}/g, '\\right\\}');
 
-    // 3. \systeme{eq1, eq2, ...} 記法を \begin{cases} ... \end{cases} に変換
+    // 3. \begin{tabular}{...} ... \end{tabular} を KaTeX 対応の \begin{array}{...} に変換 (増減表対応)
+    s = s.replace(/\\begin\{tabular\}(\{[^{}]*\})?([\s\S]*?)\\end\{tabular\}/g, (_, colSpec, body) => {
+      const cleanedBody = body.replace(/(?<!\\)\$([^$]+?)(?<!\\)\$/g, '$1');
+      return `\\begin{array}${colSpec || '{cccccccc}'}${cleanedBody}\\end{array}`;
+    });
+
+    // 4. \systeme{eq1, eq2, ...} 記法を \begin{cases} ... \end{cases} に変換
     s = s.replace(/\\systeme(?:\[[^\]]*\])?\{([^{}]+)\}/g, (_, body) => {
       const rows = body.split(',').map(r => r.trim()).filter(Boolean).join(' \\\\ ');
       return `\\begin{cases} ${rows} \\end{cases}`;
     });
 
-    // 4. \begin{numcases}{prefix} ... \end{numcases} / subnumcases 対応
+    // 5. \begin{numcases}{prefix} ... \end{numcases} / subnumcases 対応
     s = s.replace(/\\begin\{(sub)?numcases\}\{([^{}]*)\}([\s\S]*?)\\end\{(sub)?numcases\}/g, (_, _s1, prefix, body) => {
       return `${prefix}\\begin{dcases}${body}\\end{dcases}`;
     });
 
-    // 5. \begin{empheq}[left=...]{align} ... \end{empheq} 対応
+    // 6. \begin{empheq}[left=...]{align} ... \end{empheq} 対応
     s = s.replace(/\\begin\{empheq\}(?:\[[^\]]*\])?\{[a-zA-Z*]+\}([\s\S]*?)\\end\{empheq\}/g, (_, body) => {
       return `\\left\\{\\begin{aligned}${body}\\end{aligned}\\right.`;
     });
 
-    // 6. \begin{eqnarray} / \begin{eqnarray*} を \begin{aligned} に変換 (KaTeX非対応環境の吸収)
+    // 7. \begin{eqnarray} / \begin{eqnarray*} を \begin{aligned} に変換 (KaTeX非対応環境の吸収)
     s = s.replace(/\\begin\{eqnarray\*?\}([\s\S]*?)\\end\{eqnarray\*?\}/g, (_, body) => {
       const converted = body.replace(/&\s*([^&\\\n]+?)\s*&/g, '&$1');
       return `\\begin{aligned}${converted}\\end{aligned}`;
     });
 
-    // 7. \begin{equation} / \begin{equation*} を剥がす
+    // 8. \begin{equation} / \begin{equation*} を剥がす
     s = s.replace(/\\begin\{equation\*?\}([\s\S]*?)\\end\{equation\*?\}/g, '$1');
 
-    // 8. \begin{array} の直後に列指定 {l} 等が省略されている場合は {llllllll} を補完
-    s = s.replace(/\\begin\{array\}(?!\s*\{)/g, '\\begin{array}{llllllll}');
+    // 9. \begin{array} の直後に列指定 {l} 等が省略されている場合は {cccccccc} を補完
+    s = s.replace(/\\begin\{array\}(?!\s*\{)/g, '\\begin{array}{cccccccc}');
 
-    // 9. インラインモードまたは \left 内部での align / gather 環境を aligned / gathered に変換
+    // 10. インラインモードまたは \left 内部での align / gather 環境を aligned / gathered に変換
     if (!displayMode || /\\left\b/.test(s)) {
       s = s.replace(/\\begin\{align\*?\}/g, '\\begin{aligned}')
            .replace(/\\end\{align\*?\}/g, '\\end{aligned}')
@@ -469,10 +481,10 @@ class MathArchiveApp {
            .replace(/\\end\{gather\*?\}/g, '\\end{gathered}');
     }
 
-    // 10. 複数行環境内で、行末の単一「\」(改行前のバックスラッシュ1個ミス) を「\\」に補正
+    // 11. 複数行環境内で、行末の単一「\」(改行前のバックスラッシュ1個ミス) を「\\」に補正
     s = s.replace(/(?<!\\)\\[ \t]*\n/g, '\\\\\n');
 
-    // 11. cases / dcases / rcases / array / aligned / gathered 等で改行のみで「\\」が省略されている場合の自動補完
+    // 12. cases / dcases / rcases / array / aligned / gathered 等で改行のみで「\\」が省略されている場合の自動補完
     const fixMissingLineBreaks = (input, envPattern) => {
       const regex = new RegExp(`\\\\begin\\{(${envPattern})\\}(\\{[^{}]*\\})?([\\s\\S]*?)\\\\end\\{\\1\\}`, 'g');
       return input.replace(regex, (match, env, colSpec, body) => {
@@ -486,7 +498,8 @@ class MathArchiveApp {
           for (let i = 0; i < nonEmptyIndices.length - 1; i++) {
             const lineIdx = nonEmptyIndices[i];
             const trimmed = lines[lineIdx].trim();
-            if (!/(\\\\(?:\s*\[[^\]]*\])?|\\cr)\s*$/.test(trimmed)) {
+            // すでに \\ や \\[2pt] や \cr や \hline / \hdashline / \cline で終わっている場合はスキップ
+            if (!/(\\\\(?:\s*\[[^\]]*\])?|\\cr|\\hline|\\hdashline|\\cline\{[^{}]*\})\s*$/.test(trimmed)) {
               lines[lineIdx] = lines[lineIdx].replace(/\s*$/, ' \\\\');
             }
           }
@@ -497,7 +510,12 @@ class MathArchiveApp {
     s = fixMissingLineBreaks(s, 'cases|dcases|rcases|array');
     s = fixMissingLineBreaks(s, 'aligned|gathered|align\\*?');
 
-    // 12. cases / aligned / array 等やインライン数式内の \tag{...} をエラーにならない表記に変換
+    // 13. 増減表など \hline を含む \begin{array} の行間を見やすく自動調整 (\arraystretch)
+    if (/\\begin\{array\}/.test(s) && /\\hline/.test(s) && !/\\arraystretch/.test(s)) {
+      s = `\\def\\arraystretch{1.4}${s}`;
+    }
+
+    // 14. cases / aligned / array 等やインライン数式内の \tag{...} をエラーにならない表記に変換
     if (!displayMode || /\\begin\{(cases|dcases|rcases|aligned|gathered|array|pmatrix|bmatrix|matrix)\}/.test(s)) {
       s = s.replace(/\\tag\*?\{([^{}]*)\}/g, (_, label) => {
         const clean = label.trim();
@@ -552,8 +570,8 @@ class MathArchiveApp {
     // (e) $ や $$ で囲まれていない裸の \left\{ ... \right. (連立方程式など)
     processed = processed.replace(/\\left\s*(?:\\\{|\{)[\s\S]*?\\right\s*(?:\.|\\\}|\})/g, (m) => addMathToken(m, true));
 
-    // (f) $ や $$ で囲まれていない裸の LaTeX 環境 (\begin{cases}...\end{cases} 等)
-    const bareEnvRegex = /\\begin\{(cases|dcases|rcases|numcases|subnumcases|empheq|align\*?|aligned|alignat\*?|alignedat|gather\*?|gathered|equation\*?|eqnarray\*?|array|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix)\}[\s\S]*?\\end\{\1\}/g;
+    // (f) $ や $$ で囲まれていない裸の LaTeX 環境 (\begin{cases}...\end{cases}, \begin{array}...\end{array}, \begin{tabular}...\end{tabular} 等)
+    const bareEnvRegex = /\\begin\{(cases|dcases|rcases|numcases|subnumcases|empheq|align\*?|aligned|alignat\*?|alignedat|gather\*?|gathered|equation\*?|eqnarray\*?|array|tabular|matrix|pmatrix|bmatrix|Bmatrix|vmatrix|Vmatrix)\}[\s\S]*?\\end\{\1\}/g;
     processed = processed.replace(bareEnvRegex, (m) => addMathToken(m, true));
 
     // (g) 裸の \systeme{...}
