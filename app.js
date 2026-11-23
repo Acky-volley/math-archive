@@ -846,9 +846,78 @@ class MathArchiveApp {
     return fallbackVar;
   }
 
+  // Canvas 2D 描画用ラベル整形 (\sqrt{2} -> √2, sqrt(x+1) -> √(x+1), \frac{a}{b} -> a/b 等)
+  formatCanvasMathLabel(raw) {
+    if (raw === undefined || raw === null) return '';
+    let s = this.formatAxisLabelText(raw);
+    for (let i = 0; i < 4; i++) {
+      s = s.replace(/\\sqrt\s*\[\s*3\s*\]\s*\{([^{}]*)\}/g, (_, a) => /^[a-zA-Z0-9α-ω]+$/.test(a.trim()) ? `∛${a.trim()}` : `∛(${a.trim()})`);
+      s = s.replace(/\\sqrt\s*\[\s*4\s*\]\s*\{([^{}]*)\}/g, (_, a) => /^[a-zA-Z0-9α-ω]+$/.test(a.trim()) ? `∜${a.trim()}` : `∜(${a.trim()})`);
+      s = s.replace(/\\sqrt\s*\{([^{}]*)\}/g, (_, a) => /^[a-zA-Z0-9α-ω]+$/.test(a.trim()) ? `√${a.trim()}` : `√(${a.trim()})`);
+      s = s.replace(/\bsqrt\s*\(\s*([^()]+)\s*\)/gi, (_, a) => /^[a-zA-Z0-9α-ω]+$/.test(a.trim()) ? `√${a.trim()}` : `√(${a.trim()})`);
+      s = s.replace(/\bcbrt\s*\(\s*([^()]+)\s*\)/gi, (_, a) => /^[a-zA-Z0-9α-ω]+$/.test(a.trim()) ? `∛${a.trim()}` : `∛(${a.trim()})`);
+      s = s.replace(/\\d?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '$1/$2');
+      s = s.replace(/\^\s*\{([^{}]*)\}/g, '^$1');
+    }
+    s = s.replace(/\\sqrt\s*([a-zA-Z0-9α-ω]+)/g, '√$1')
+         .replace(/\\(?:leqq|leqslant|le)\b|<=/g, '≦')
+         .replace(/\\(?:geqq|geqslant|ge)\b|>=/g, '≧')
+         .replace(/\\cdot\b/g, '・')
+         .replace(/\\times\b/g, '×');
+    return s;
+  }
+
+  // グラフタイトル・凡例HTML用の数式レンダリング (\sqrt{...} や $...$ を KaTeX で美しく描画)
+  renderGraphLabelHtml(raw) {
+    if (!raw) return '';
+    const str = String(raw).trim();
+    if (window.katex) {
+      // 1. $...$ で囲まれた部分があれば KaTeX 変換
+      if (str.includes('$')) {
+        return str.replace(/\$([^$]+)\$/g, (_, math) => {
+          try {
+            return window.katex.renderToString(math, { throwOnError: false, strict: false });
+          } catch (_) {
+            return this.escapeHtml(this.formatCanvasMathLabel(math));
+          }
+        });
+      }
+      // 2. 裸の \sqrt{...} や \frac{...}{...} が含まれる場合は該当数式またはラベルを KaTeX 変換
+      if (/\\(?:sqrt|d?frac|alpha|beta|gamma|theta|pi|leqq|geqq|le|ge)\b/.test(str)) {
+        return this.escapeHtml(str).replace(/\\(?:sqrt(?:\[[^\]]*\])?\s*\{[^{}]*\}|d?frac\s*\{[^{}]*\}\s*\{[^{}]*\})/g, (m) => {
+          try {
+            return window.katex.renderToString(m, { throwOnError: false, strict: false });
+          } catch (_) {
+            return this.escapeHtml(this.formatCanvasMathLabel(m));
+          }
+        });
+      }
+    }
+    return this.escapeHtml(this.formatCanvasMathLabel(str));
+  }
+
+  extractParenPair(str) {
+    const s = String(str || '').trim();
+    const openIdx = s.indexOf('(');
+    const closeIdx = s.lastIndexOf(')');
+    if (openIdx === -1 || closeIdx <= openIdx) return null;
+    const inner = s.slice(openIdx + 1, closeIdx);
+    let depth = 0;
+    for (let i = 0; i < inner.length; i++) {
+      const ch = inner[i];
+      if (ch === '(' || ch === '{' || ch === '[') depth++;
+      else if (ch === ')' || ch === '}' || ch === ']') depth = Math.max(0, depth - 1);
+      else if (ch === ',' && depth === 0) {
+        return [inner.slice(0, i).trim(), inner.slice(i + 1).trim()];
+      }
+    }
+    return null;
+  }
+
   compileMathExpr2D(rawExpr, primaryVar = 'x', xVar = 'x', yVar = 'y') {
     if (!rawExpr || !String(rawExpr).trim()) return () => NaN;
-    let s = String(rawExpr).trim().replace(/^\$+|\$+$/g, '').trim();
+    // ツールバーから $\sqrt{x}$ 等が挿入されてもそのまま動くよう $ をすべて除去
+    let s = String(rawExpr).trim().replace(/\$/g, '').trim();
 
     // 全角記号・LaTeX構文の正規化
     s = s.replace(/＋/g, '+')
@@ -863,10 +932,22 @@ class MathArchiveApp {
          .replace(/｜/g, '|')
          .replace(/\\left|\\right/g, '');
 
-    // \frac{a}{b}, \dfrac{a}{b}, \sqrt{a} の展開
-    for (let i = 0; i < 4; i++) {
-      s = s.replace(/\\d?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '(($1)/($2))');
+    // ネストされた中括弧 { } にも対応した \sqrt[n]{a}, \sqrt{a}, √{a}, \frac{a}{b}, ^{a} の段階的展開
+    for (let i = 0; i < 8; i++) {
+      const prev = s;
+      s = s.replace(/\\sqrt\s*\[\s*([^\]]+?)\s*\]\s*\{([^{}]*)\}/g, 'nthroot(($1),($2))');
       s = s.replace(/\\sqrt\s*\{([^{}]*)\}/g, 'sqrt($1)');
+      s = s.replace(/√\s*\{([^{}]*)\}/g, 'sqrt($1)');
+      s = s.replace(/∛\s*\{([^{}]*)\}/g, 'cbrt($1)');
+      s = s.replace(/∜\s*\{([^{}]*)\}/g, 'fourthroot($1)');
+      s = s.replace(/\\d?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '(($1)/($2))');
+      s = s.replace(/\^\s*\{([^{}]*)\}/g, '^($1)');
+      if (s === prev) {
+        // これ以上 \sqrt や \frac が直接マッチしない場合、内側の汎用 { ... } を ( ... ) に変換して外側を解く
+        const unlocked = s.replace(/\{([^{}]*)\}/g, '($1)');
+        if (unlocked === s) break;
+        s = unlocked;
+      }
     }
     s = s.replace(/\{/g, '(').replace(/\}/g, ')');
 
@@ -877,9 +958,23 @@ class MathArchiveApp {
       s = next;
     }
 
-    // ギリシャ文字変数の正規化と \sin, \cos 等のバックスラッシュ除去
+    // ギリシャ文字変数の正規化と \sin, \cos, \sqrt 等のバックスラッシュ除去
     s = this.formatAxisLabelText(s);
     s = s.replace(/\\([a-zA-Z]+)/g, '$1');
+
+    const nthRootFn = (n, val) => {
+      if (!Number.isFinite(n) || !Number.isFinite(val) || n === 0) return NaN;
+      if (n === 2) return Math.sqrt(val);
+      if (n === 3) return Math.cbrt(val);
+      if (val < 0) {
+        const rounded = Math.round(n);
+        if (Math.abs(n - rounded) < 1e-9 && Math.abs(rounded % 2) === 1) {
+          return -Math.pow(-val, 1 / rounded);
+        }
+        return NaN;
+      }
+      return Math.pow(val, 1 / n);
+    };
 
     const FUNC_MAP = {
       sin: Math.sin, cos: Math.cos, tan: Math.tan,
@@ -887,13 +982,21 @@ class MathArchiveApp {
       arcsin: Math.asin, arccos: Math.acos, arctan: Math.atan,
       sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
       sec: (v) => 1 / Math.cos(v), csc: (v) => 1 / Math.sin(v), cot: (v) => 1 / Math.tan(v),
-      log10: Math.log10, log2: Math.log2, log: Math.log, ln: Math.log,
-      exp: Math.exp, sqrt: Math.sqrt, cbrt: Math.cbrt,
+      log10: Math.log10, log2: Math.log2,
+      log: (a, b) => (b !== undefined ? Math.log(b) / Math.log(a) : Math.log(a)),
+      ln: Math.log,
+      exp: Math.exp,
+      sqrt: Math.sqrt,
+      cbrt: Math.cbrt,
+      fourthroot: (v) => Math.pow(v, 0.25),
+      nthroot: nthRootFn,
+      root: nthRootFn,
+      pow: Math.pow,
       abs: Math.abs, floor: Math.floor, ceil: Math.ceil, round: Math.round, sign: Math.sign
     };
     const FUNC_NAMES = Object.keys(FUNC_MAP).sort((a, b) => b.length - a.length);
 
-    // トークナイザー (x, y に加え、a軸・b軸など任意のカスタム変数 xVar, yVar に対応)
+    // トークナイザー (x, y, カスタム変数 xVar, yVar, および根号記号 √, ∛, ∜ に完全対応)
     const rawTokens = [];
     let i = 0;
     while (i < s.length) {
@@ -912,7 +1015,11 @@ class MathArchiveApp {
       }
       if (ch === '(') { rawTokens.push({ type: 'LPAREN' }); i++; continue; }
       if (ch === ')') { rawTokens.push({ type: 'RPAREN' }); i++; continue; }
+      if (ch === ',') { rawTokens.push({ type: 'COMMA' }); i++; continue; }
       if (ch === 'π') { rawTokens.push({ type: 'CONST', value: Math.PI }); i++; continue; }
+      if (ch === '√') { rawTokens.push({ type: 'FUNC', fn: Math.sqrt, name: 'sqrt' }); i++; continue; }
+      if (ch === '∛') { rawTokens.push({ type: 'FUNC', fn: Math.cbrt, name: 'cbrt' }); i++; continue; }
+      if (ch === '∜') { rawTokens.push({ type: 'FUNC', fn: FUNC_MAP.fourthroot, name: 'fourthroot' }); i++; continue; }
 
       if (/[a-zA-Zαβγδθλμστφω]/.test(ch)) {
         const rest = s.slice(i);
@@ -1043,9 +1150,15 @@ class MathArchiveApp {
         const fn = t.fn;
         if (peek() && peek().type === 'LPAREN') {
           consume();
-          const arg = parseExpr();
+          const arg1 = parseExpr();
+          if (peek() && peek().type === 'COMMA') {
+            consume();
+            const arg2 = parseExpr();
+            if (peek() && peek().type === 'RPAREN') consume();
+            return (x, y) => fn(arg1(x, y), arg2(x, y));
+          }
           if (peek() && peek().type === 'RPAREN') consume();
-          return (x, y) => fn(arg(x, y));
+          return (x, y) => fn(arg1(x, y));
         }
         const arg = parseUnary();
         return (x, y) => fn(arg(x, y));
@@ -1090,11 +1203,23 @@ class MathArchiveApp {
   }
 
   parseBracketPair(str, fallback = [-5, 5]) {
-    const m = String(str).match(/\[([^\],]+),([^\]]+)\]/);
-    if (!m) return fallback;
-    const a = this.evalMathConst(m[1], fallback[0]);
-    const b = this.evalMathConst(m[2], fallback[1]);
-    return a < b ? [a, b] : fallback;
+    const s = String(str || '').trim();
+    const openIdx = s.indexOf('[');
+    const closeIdx = s.lastIndexOf(']');
+    if (openIdx === -1 || closeIdx <= openIdx) return fallback;
+    const inner = s.slice(openIdx + 1, closeIdx);
+    let depth = 0;
+    for (let i = 0; i < inner.length; i++) {
+      const ch = inner[i];
+      if (ch === '(' || ch === '{' || ch === '[') depth++;
+      else if (ch === ')' || ch === '}' || ch === ']') depth = Math.max(0, depth - 1);
+      else if (ch === ',' && depth === 0) {
+        const a = this.evalMathConst(inner.slice(0, i), fallback[0]);
+        const b = this.evalMathConst(inner.slice(i + 1), fallback[1]);
+        return a < b ? [a, b] : fallback;
+      }
+    }
+    return fallback;
   }
 
   normalizeInequalityOperators(str) {
@@ -1344,15 +1469,17 @@ class MathArchiveApp {
 
         // 2. 点プロット (point: (x, y) | label: P | guide)
         if (key === 'point' || key === 'pt') {
-          const pm = val.match(/\(\s*([^,]+)\s*,\s*([^)]+)\s*\)/);
+          const pm = this.extractParenPair(val);
           if (pm) {
-            const px = this.evalMathConst(pm[1], 0);
-            const py = this.evalMathConst(pm[2], 0);
+            const px = this.evalMathConst(pm[0], 0);
+            const py = this.evalMathConst(pm[1], 0);
+            const rawLbl = opts.label !== undefined ? opts.label : `(${pm[0]}, ${pm[1]})`;
             config.points.push({
               x: px,
               y: py,
               color: opts.color || '#ef4444',
-              label: opts.label !== undefined ? opts.label : `(${pm[1].trim()}, ${pm[2].trim()})`,
+              label: this.formatCanvasMathLabel(rawLbl),
+              rawLabel: rawLbl,
               guide: opts.guide !== undefined ? opts.guide !== 'false' : true
             });
           }
@@ -1391,10 +1518,10 @@ class MathArchiveApp {
 
         // 4. 媒介変数曲線 (param: (x(t), y(t)) | t: [0, 2*pi])
         if (key === 'param' || key === 'parametric') {
-          const pm = val.match(/\(\s*([^,]+)\s*,\s*([^)]+)\s*\)/);
+          const pm = this.extractParenPair(val);
           if (pm) {
-            const fx = this.compileMathExpr(pm[1], 't', 't', 'y');
-            const fy = this.compileMathExpr(pm[2], 't', 't', 'y');
+            const fx = this.compileMathExpr(pm[0], 't', 't', 'y');
+            const fy = this.compileMathExpr(pm[1], 't', 't', 'y');
             const tRange = this.parseBracketPair(opts.t || opts.domain || '[0, 2*pi]', [0, 2 * Math.PI]);
             config.curves.push({
               type: 'param',
@@ -1405,7 +1532,7 @@ class MathArchiveApp {
               color: opts.color || nextColor(),
               dashed: Boolean(opts.dashed),
               dotted: Boolean(opts.dotted),
-              label: opts.label || `(${pm[1].trim()}, ${pm[2].trim()})`
+              label: opts.label || `(${pm[0]}, ${pm[1]})`
             });
           }
           continue;
@@ -1413,11 +1540,13 @@ class MathArchiveApp {
 
         // 5. 円 (circle: (cx, cy), r)
         if (key === 'circle') {
-          const cm = val.match(/\(\s*([^,]+)\s*,\s*([^)]+)\s*\)\s*,\s*(?:r\s*=\s*)?(.+)/);
-          if (cm) {
-            const cx = this.evalMathConst(cm[1], 0);
-            const cy = this.evalMathConst(cm[2], 0);
-            const r = Math.abs(this.evalMathConst(cm[3], 1));
+          const closeParen = val.lastIndexOf(')');
+          const pm = closeParen !== -1 ? this.extractParenPair(val.slice(0, closeParen + 1)) : null;
+          const rMatch = closeParen !== -1 ? val.slice(closeParen + 1).match(/,\s*(?:r\s*=\s*)?(.+)/) : null;
+          if (pm && rMatch) {
+            const cx = this.evalMathConst(pm[0], 0);
+            const cy = this.evalMathConst(pm[1], 0);
+            const r = Math.abs(this.evalMathConst(rMatch[1], 1));
             config.curves.push({
               type: 'param',
               fx: (t) => cx + r * Math.cos(t),
@@ -1427,7 +1556,7 @@ class MathArchiveApp {
               color: opts.color || nextColor(),
               dashed: Boolean(opts.dashed),
               dotted: Boolean(opts.dotted),
-              label: opts.label || `円 (中心(${cx},${cy}), r=${Number(r.toFixed(2))})`
+              label: opts.label || `円 (中心(${this.formatCanvasMathLabel(pm[0])},${this.formatCanvasMathLabel(pm[1])}), r=${this.formatCanvasMathLabel(rMatch[1].trim())})`
             });
           }
           continue;
@@ -1666,7 +1795,7 @@ class MathArchiveApp {
 
     widgetEl.innerHTML = `
       <div class="graph-toolbar">
-        <div class="graph-title">📈 ${this.escapeHtml(spec.title)}</div>
+        <div class="graph-title">📈 ${this.renderGraphLabelHtml(spec.title)}</div>
         <div class="graph-controls">
           <span class="graph-coords-badge">${this.escapeHtml(emptyCoordsText)}</span>
           <button type="button" class="graph-ctrl-btn" data-act="zoom-in" title="拡大">＋</button>
@@ -1685,16 +1814,16 @@ class MathArchiveApp {
     const coordsBadge = widgetEl.querySelector('.graph-coords-badge');
     const legendEl = widgetEl.querySelector('.graph-legend');
 
-    // 凡例の生成
+    // 凡例の生成 (根号 \sqrt{...} や √ などの数式表記にも対応)
     const legendItems = [];
     spec.curves.forEach(c => {
       if (c.label) {
-        legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch" style="background:${this.escapeHtml(c.color)}"></span><span>${this.escapeHtml(c.label)}</span></span>`);
+        legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch" style="background:${this.escapeHtml(c.color)}"></span><span>${this.renderGraphLabelHtml(c.label)}</span></span>`);
       }
     });
     spec.shades.forEach(sh => {
       const lbl = sh.label || `面積区間 [${Number(sh.from.toFixed(2))}, ${Number(sh.to.toFixed(2))}]`;
-      legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch swatch-shade" style="background:${this.escapeHtml(sh.color)}"></span><span>${this.escapeHtml(lbl)}</span></span>`);
+      legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch swatch-shade" style="background:${this.escapeHtml(sh.color)}"></span><span>${this.renderGraphLabelHtml(lbl)}</span></span>`);
     });
     if (spec.ineqGroups && spec.ineqGroups.length > 0) {
       spec.ineqGroups.forEach(grp => {
@@ -1704,12 +1833,12 @@ class MathArchiveApp {
         if (hasStrict && hasInclusive) boundaryNote = '実線:境界を含む / 破線:含まない';
         else if (hasStrict) boundaryNote = '境界線を含まない（破線）';
         const lbl = grp.label ? `${grp.label}（${boundaryNote}）` : `不等式の領域（${boundaryNote}）`;
-        legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch swatch-shade" style="background:${this.escapeHtml(grp.color)}"></span><span>${this.escapeHtml(lbl)}</span></span>`);
+        legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch swatch-shade" style="background:${this.escapeHtml(grp.color)}"></span><span>${this.renderGraphLabelHtml(lbl)}</span></span>`);
       });
     }
     spec.points.forEach(pt => {
-      if (pt.label) {
-        legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch swatch-point" style="background:${this.escapeHtml(pt.color)}"></span><span>${this.escapeHtml(pt.label)}</span></span>`);
+      if (pt.rawLabel || pt.label) {
+        legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch swatch-point" style="background:${this.escapeHtml(pt.color)}"></span><span>${this.renderGraphLabelHtml(pt.rawLabel || pt.label)}</span></span>`);
       }
     });
     legendEl.innerHTML = legendItems.join('');
@@ -1981,13 +2110,44 @@ class MathArchiveApp {
           const cMin = curve.subDomain ? Math.max(view.xmin, curve.subDomain[0]) : view.xmin;
           const cMax = curve.subDomain ? Math.min(view.xmax, curve.subDomain[1]) : view.xmax;
           if (cMin < cMax) {
+            let prevSampleX = null;
+            let prevSampleFinite = false;
             for (let k = 0; k <= samples; k++) {
               const x = cMin + (k / samples) * (cMax - cMin);
               const y = curve.fn(x);
-              if (!Number.isFinite(y) || y < view.ymin - ySpan * 4 || y > view.ymax + ySpan * 4) {
+              const isValid = Number.isFinite(y) && y >= view.ymin - ySpan * 4 && y <= view.ymax + ySpan * 4;
+              if (!isValid) {
+                // 根号関数 (例: √(4-x^2)) の定義域右端で途切れないよう二分探索で境界端点を補間
+                if (drawing && prevSampleX !== null && prevSampleFinite && !Number.isFinite(y)) {
+                  let lo = prevSampleX, hi = x, edgeX = prevSampleX, edgeY = prevY;
+                  for (let b = 0; b < 16; b++) {
+                    const mid = 0.5 * (lo + hi);
+                    const my = curve.fn(mid);
+                    if (Number.isFinite(my)) { lo = mid; edgeX = mid; edgeY = my; }
+                    else { hi = mid; }
+                  }
+                  if (prevY !== null && Math.abs(edgeY - prevY) <= ySpan * 1.6) {
+                    ctx.lineTo(toPxX(edgeX), toPxY(edgeY));
+                  }
+                }
                 drawing = false;
                 prevY = null;
+                prevSampleX = x;
+                prevSampleFinite = false;
                 continue;
+              }
+              // 根号関数 (例: √x, √(x-1)) の定義域左端で原点や端点から隙間なく始まるよう二分探索で補間
+              if (!drawing && prevSampleX !== null && !prevSampleFinite) {
+                let lo = prevSampleX, hi = x, edgeX = x, edgeY = y;
+                for (let b = 0; b < 16; b++) {
+                  const mid = 0.5 * (lo + hi);
+                  const my = curve.fn(mid);
+                  if (Number.isFinite(my)) { hi = mid; edgeX = mid; edgeY = my; }
+                  else { lo = mid; }
+                }
+                ctx.moveTo(toPxX(edgeX), toPxY(edgeY));
+                drawing = true;
+                prevY = edgeY;
               }
               // 漸近線（不連続ジャンプ）の検出
               if (prevY !== null && Math.abs(y - prevY) > ySpan * 1.6) {
@@ -2002,17 +2162,49 @@ class MathArchiveApp {
                 ctx.lineTo(px, py);
               }
               prevY = y;
+              prevSampleX = x;
+              prevSampleFinite = true;
             }
           }
         } else if (curve.type === 'x') {
+          let prevSampleY = null;
+          let prevSampleFinite = false;
           for (let k = 0; k <= samples; k++) {
             const y = view.ymin + (k / samples) * (view.ymax - view.ymin);
             const x = curve.fn(y);
-            if (!Number.isFinite(x)) { drawing = false; continue; }
+            if (!Number.isFinite(x)) {
+              if (drawing && prevSampleY !== null && prevSampleFinite) {
+                let lo = prevSampleY, hi = y, edgeY = prevSampleY, edgeX = curve.fn(prevSampleY);
+                for (let b = 0; b < 16; b++) {
+                  const mid = 0.5 * (lo + hi);
+                  const mx = curve.fn(mid);
+                  if (Number.isFinite(mx)) { lo = mid; edgeY = mid; edgeX = mx; }
+                  else { hi = mid; }
+                }
+                ctx.lineTo(toPxX(edgeX), toPxY(edgeY));
+              }
+              drawing = false;
+              prevSampleY = y;
+              prevSampleFinite = false;
+              continue;
+            }
+            if (!drawing && prevSampleY !== null && !prevSampleFinite) {
+              let lo = prevSampleY, hi = y, edgeY = y, edgeX = x;
+              for (let b = 0; b < 16; b++) {
+                const mid = 0.5 * (lo + hi);
+                const mx = curve.fn(mid);
+                if (Number.isFinite(mx)) { hi = mid; edgeY = mid; edgeX = mx; }
+                else { lo = mid; }
+              }
+              ctx.moveTo(toPxX(edgeX), toPxY(edgeY));
+              drawing = true;
+            }
             const px = toPxX(x);
             const py = toPxY(y);
             if (!drawing) { ctx.moveTo(px, py); drawing = true; }
             else { ctx.lineTo(px, py); }
+            prevSampleY = y;
+            prevSampleFinite = true;
           }
         } else if (curve.type === 'param') {
           for (let k = 0; k <= samples; k++) {
@@ -2303,16 +2495,28 @@ class MathArchiveApp {
   }
 
   insertMathSnippet(snippet) {
-    // 現在アクティブな（あるいは最後の）textareaに挿入
+    // 現在アクティブな（あるいは直前にフォーカスしていた）textareaに挿入
     let target = document.activeElement;
     if (!target || target.tagName !== 'TEXTAREA') {
-      target = document.getElementById('form-problem');
+      target = this.lastActiveTextarea || document.getElementById('form-problem');
     }
     const start = target.selectionStart || 0;
     const end = target.selectionEnd || 0;
     const val = target.value;
-    target.value = val.substring(0, start) + snippet + val.substring(end);
-    target.selectionStart = target.selectionEnd = start + snippet.length;
+
+    // カーソルが ```graph ... ``` ブロック内部にある場合、$\sqrt{x}$ 等の外側の $ を自動除去して挿入
+    let toInsert = snippet;
+    const beforeCursor = val.substring(0, start);
+    const lastFenceOpen = beforeCursor.lastIndexOf('```');
+    if (lastFenceOpen !== -1) {
+      const sinceFence = beforeCursor.slice(lastFenceOpen);
+      if (/^```(?:graph|plot)\b/i.test(sinceFence) && /^\$[^$\n]+\$$/.test(toInsert)) {
+        toInsert = toInsert.slice(1, -1);
+      }
+    }
+
+    target.value = val.substring(0, start) + toInsert + val.substring(end);
+    target.selectionStart = target.selectionEnd = start + toInsert.length;
     target.focus();
     target.dispatchEvent(new Event('input'));
   }
