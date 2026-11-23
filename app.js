@@ -79,6 +79,8 @@ class MathArchiveApp {
     this.activeTag = null;
     this.editingId = null;
     this.debounceTimers = {};
+    this.activeImages = {}; // { [imgId]: dataUrl } 編集中の問題に紐づく画像ストア
+    this.lastActiveTextarea = null;
 
     this.init();
   }
@@ -287,13 +289,29 @@ class MathArchiveApp {
 
     // 数式ツールバーボタン
     document.querySelectorAll('.btn-math').forEach(btn => {
+      if (btn.id === 'btn-insert-image') return;
       btn.addEventListener('click', () => {
         const insertText = btn.getAttribute('data-insert');
-        this.insertMathSnippet(insertText);
+        if (insertText) this.insertMathSnippet(insertText);
       });
     });
 
-    // エディタのリアルタイムプレビュー
+    // 画像挿入ボタン & ファイル選択
+    const imgBtn = document.getElementById('btn-insert-image');
+    const imgInput = document.getElementById('editor-image-input');
+    if (imgBtn && imgInput) {
+      imgBtn.addEventListener('click', () => {
+        imgInput.click();
+      });
+      imgInput.addEventListener('change', async (e) => {
+        if (e.target.files && e.target.files.length > 0) {
+          await this.handleImageFilesInsert(e.target.files, this.lastActiveTextarea);
+          e.target.value = '';
+        }
+      });
+    }
+
+    // エディタのリアルタイムプレビュー & 画像貼り付け(Ctrl+V)・ドラッグ&ドロップ
     this.bindEditorPreview('form-problem', 'preview-problem');
     this.bindEditorPreview('form-hint', 'preview-hint');
     this.bindEditorPreview('form-solution', 'preview-solution');
@@ -632,12 +650,203 @@ class MathArchiveApp {
         }
       });
     }
+
+    // 7. 貼り付け画像 (img:img-xxx または通常の画像) の解決・サイズ指定・拡大ライトボックス設定
+    this.enhanceRenderedImages(targetEl);
+  }
+
+  getImageDataUrl(imgId) {
+    if (!imgId) return null;
+    if (this.activeImages && this.activeImages[imgId]) {
+      return this.activeImages[imgId];
+    }
+    for (const q of this.questions) {
+      if (q.images && q.images[imgId]) {
+        return q.images[imgId];
+      }
+    }
+    return null;
+  }
+
+  enhanceRenderedImages(targetEl) {
+    if (!targetEl) return;
+    const isIndexPreview = targetEl.classList.contains('index-card-preview');
+    targetEl.querySelectorAll('img').forEach(img => {
+      const rawSrc = img.getAttribute('src') || '';
+      if (rawSrc.startsWith('img:')) {
+        const imgId = rawSrc.slice(4).trim();
+        const resolved = this.getImageDataUrl(imgId);
+        if (resolved) {
+          img.src = resolved;
+        }
+      }
+
+      // alt="図の説明|480" のようなサイズ指定とキャプションを解析
+      const rawAlt = img.getAttribute('alt') || '';
+      let caption = rawAlt.trim();
+      let widthSpec = '';
+      if (rawAlt.includes('|')) {
+        const parts = rawAlt.split('|');
+        const last = parts[parts.length - 1].trim();
+        if (/^\d+(?:px|%)?$/.test(last)) {
+          widthSpec = /^\d+$/.test(last) ? `${last}px` : last;
+          caption = parts.slice(0, -1).join('|').trim();
+        }
+      }
+
+      if (widthSpec && !isIndexPreview) {
+        img.style.maxWidth = `min(100%, ${widthSpec})`;
+      }
+      img.setAttribute('alt', caption || '図');
+
+      // キャプション付き figure ラッパー & クリック拡大
+      if (!isIndexPreview) {
+        if (caption && caption !== '図' && caption !== '画像' && !img.closest('figure')) {
+          const fig = document.createElement('figure');
+          fig.className = 'math-image-figure';
+          img.parentNode.insertBefore(fig, img);
+          fig.appendChild(img);
+          const capEl = document.createElement('figcaption');
+          capEl.className = 'math-image-caption';
+          capEl.textContent = caption;
+          fig.appendChild(capEl);
+        }
+        img.title = 'クリックで拡大表示';
+        img.addEventListener('click', (e) => {
+          e.stopPropagation();
+          this.openImageLightbox(img.src, caption);
+        });
+      }
+    });
+  }
+
+  openImageLightbox(src, caption = '') {
+    if (!src) return;
+    const overlay = document.createElement('div');
+    overlay.className = 'image-lightbox-overlay';
+    overlay.innerHTML = `
+      <img src="${this.escapeHtml(src)}" alt="${this.escapeHtml(caption || '拡大画像')}">
+      ${caption && caption !== '図' && caption !== '画像' ? `<div class="image-lightbox-caption">${this.escapeHtml(caption)}</div>` : ''}
+    `;
+    overlay.addEventListener('click', () => overlay.remove());
+    document.body.appendChild(overlay);
+  }
+
+  compressImageFileToDataUrl(file, maxDim = 1000, quality = 0.85) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
+      reader.onload = (ev) => {
+        const dataUrl = ev.target.result;
+        if (file.type === 'image/svg+xml') {
+          resolve(dataUrl);
+          return;
+        }
+        const image = new Image();
+        image.onerror = () => resolve(dataUrl);
+        image.onload = () => {
+          let w = image.naturalWidth || image.width;
+          let h = image.naturalHeight || image.height;
+          if (w > maxDim || h > maxDim) {
+            if (w >= h) {
+              h = Math.round((h * maxDim) / w);
+              w = maxDim;
+            } else {
+              w = Math.round((w * maxDim) / h);
+              h = maxDim;
+            }
+          }
+          const canvas = document.createElement('canvas');
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(image, 0, 0, w, h);
+          let out = canvas.toDataURL('image/webp', quality);
+          if (!out.startsWith('data:image/webp')) {
+            out = canvas.toDataURL('image/png');
+          }
+          resolve(out);
+        };
+        image.src = dataUrl;
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async handleImageFilesInsert(fileList, targetTextarea = null) {
+    const files = Array.from(fileList || []).filter(f => f && f.type && f.type.startsWith('image/'));
+    if (files.length === 0) return;
+
+    let target = targetTextarea || this.lastActiveTextarea || document.activeElement;
+    if (!target || target.tagName !== 'TEXTAREA') {
+      target = document.getElementById('form-problem');
+    }
+
+    for (const file of files) {
+      try {
+        const dataUrl = await this.compressImageFileToDataUrl(file);
+        const existingCount = Object.keys(this.activeImages || {}).length + 1;
+        const suffix = Math.random().toString(36).slice(2, 6);
+        const imgId = `img-${existingCount}-${suffix}`;
+        this.activeImages[imgId] = dataUrl;
+
+        const baseName = (file.name || '').replace(/\.[^.]+$/, '').trim();
+        const label = baseName && !/^image$/i.test(baseName) ? baseName : '図';
+        const snippet = `\n![${label}|480](img:${imgId})\n`;
+
+        const start = target.selectionStart || 0;
+        const end = target.selectionEnd || 0;
+        const val = target.value;
+        target.value = val.substring(0, start) + snippet + val.substring(end);
+        target.selectionStart = target.selectionEnd = start + snippet.length;
+        target.focus();
+        target.dispatchEvent(new Event('input'));
+        this.showToast('🖼️ 画像を貼り付けました（"|480" の数値で表示幅を調整できます）');
+      } catch (err) {
+        console.error('Image insert error:', err);
+        this.showToast('⚠️ 画像の挿入に失敗しました');
+      }
+    }
   }
 
   // --------------------------------------------------------
-  // インタラクティブ関数グラフ描画エンジン (Canvas / 数式・不等式パーサー)
+  // インタラクティブ関数グラフ描画エンジン (Canvas / 数式・不等式・任意座標軸パーサー)
   // --------------------------------------------------------
-  compileMathExpr2D(rawExpr, primaryVar = 'x') {
+  formatAxisLabelText(raw) {
+    if (raw === undefined || raw === null) return '';
+    return String(raw)
+      .trim()
+      .replace(/^\$+|\$+$/g, '')
+      .replace(/\\alpha\b/g, 'α')
+      .replace(/\\beta\b/g, 'β')
+      .replace(/\\gamma\b/g, 'γ')
+      .replace(/\\delta\b/g, 'δ')
+      .replace(/\\theta\b/g, 'θ')
+      .replace(/\\lambda\b/g, 'λ')
+      .replace(/\\mu\b/g, 'μ')
+      .replace(/\\pi\b/g, 'π')
+      .replace(/\\sigma\b/g, 'σ')
+      .replace(/\\tau\b/g, 'τ')
+      .replace(/\\phi\b/g, 'φ')
+      .replace(/\\omega\b/g, 'ω')
+      .replace(/\\Delta\b/g, 'Δ')
+      .replace(/\\Omega\b/g, 'Ω')
+      .trim();
+  }
+
+  extractAxisVariableName(axisLabel, fallbackVar) {
+    if (!axisLabel) return fallbackVar;
+    const cleaned = this.formatAxisLabelText(axisLabel)
+      .replace(/軸$/, '')
+      .replace(/\s*\(.*?\)\s*$/, '')
+      .trim();
+    if (/^[a-zA-Zαβγδθλμστφω]$/.test(cleaned)) {
+      return cleaned;
+    }
+    return fallbackVar;
+  }
+
+  compileMathExpr2D(rawExpr, primaryVar = 'x', xVar = 'x', yVar = 'y') {
     if (!rawExpr || !String(rawExpr).trim()) return () => NaN;
     let s = String(rawExpr).trim().replace(/^\$+|\$+$/g, '').trim();
 
@@ -668,7 +877,8 @@ class MathArchiveApp {
       s = next;
     }
 
-    // \sin, \cos, \pi 等のバックスラッシュを除去
+    // ギリシャ文字変数の正規化と \sin, \cos 等のバックスラッシュ除去
+    s = this.formatAxisLabelText(s);
     s = s.replace(/\\([a-zA-Z]+)/g, '$1');
 
     const FUNC_MAP = {
@@ -683,7 +893,7 @@ class MathArchiveApp {
     };
     const FUNC_NAMES = Object.keys(FUNC_MAP).sort((a, b) => b.length - a.length);
 
-    // トークナイザー (2変数 x, y および媒介変数 t 対応)
+    // トークナイザー (x, y に加え、a軸・b軸など任意のカスタム変数 xVar, yVar に対応)
     const rawTokens = [];
     let i = 0;
     while (i < s.length) {
@@ -704,13 +914,13 @@ class MathArchiveApp {
       if (ch === ')') { rawTokens.push({ type: 'RPAREN' }); i++; continue; }
       if (ch === 'π') { rawTokens.push({ type: 'CONST', value: Math.PI }); i++; continue; }
 
-      if (/[a-zA-Z]/.test(ch)) {
+      if (/[a-zA-Zαβγδθλμστφω]/.test(ch)) {
         const rest = s.slice(i);
         let matched = false;
         for (const fn of FUNC_NAMES) {
           if (rest.toLowerCase().startsWith(fn)) {
             const after = rest[fn.length] || '';
-            if (!/[a-zA-Z]/.test(after) || /^[xyzt]$/i.test(after)) {
+            if (!/[a-zA-Z]/.test(after) || /^[xyzt]$/i.test(after) || after === xVar || after === yVar) {
               rawTokens.push({ type: 'FUNC', fn: FUNC_MAP[fn], name: fn });
               i += fn.length;
               matched = true;
@@ -725,12 +935,23 @@ class MathArchiveApp {
           i += 2;
           continue;
         }
-        if (ch === 'x' || ch === 'X') {
+        // カスタム軸変数 (例: a軸 -> xVar='a', b軸 -> yVar='b') を優先判定
+        if (ch === xVar || (xVar.toLowerCase() !== yVar.toLowerCase() && ch.toLowerCase() === xVar.toLowerCase())) {
           rawTokens.push({ type: 'VAR_X' });
           i++;
           continue;
         }
-        if (ch === 'y' || ch === 'Y') {
+        if (ch === yVar || (xVar.toLowerCase() !== yVar.toLowerCase() && ch.toLowerCase() === yVar.toLowerCase())) {
+          rawTokens.push({ type: 'VAR_Y' });
+          i++;
+          continue;
+        }
+        if ((ch === 'x' || ch === 'X') && yVar.toLowerCase() !== 'x') {
+          rawTokens.push({ type: 'VAR_X' });
+          i++;
+          continue;
+        }
+        if ((ch === 'y' || ch === 'Y') && xVar.toLowerCase() !== 'y') {
           rawTokens.push({ type: 'VAR_Y' });
           i++;
           continue;
@@ -854,9 +1075,9 @@ class MathArchiveApp {
     }
   }
 
-  compileMathExpr(rawExpr, varName = 'x') {
-    const fn2d = this.compileMathExpr2D(rawExpr, varName);
-    if (varName.toLowerCase() === 'y') {
+  compileMathExpr(rawExpr, varName = 'x', xVar = 'x', yVar = 'y') {
+    const fn2d = this.compileMathExpr2D(rawExpr, varName, xVar, yVar);
+    if (varName === yVar || (varName.toLowerCase() === 'y' && xVar.toLowerCase() !== 'y')) {
       return (y) => fn2d(0, y);
     }
     return (x) => fn2d(x, 0);
@@ -892,7 +1113,7 @@ class MathArchiveApp {
       .trim();
   }
 
-  parseSingleInequalityClause(clause, color, opts, addBoundaryCurve = true) {
+  parseSingleInequalityClause(clause, color, opts, addBoundaryCurve = true, xVar = 'x', yVar = 'y') {
     const norm = this.normalizeInequalityOperators(clause);
     const tokens = norm.split(/(<=|>=|<|>)/).map(t => t.trim());
     if (tokens.length < 3) return [];
@@ -908,10 +1129,18 @@ class MathArchiveApp {
       }
     }
 
+    const escapeRx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const xVarPat = xVar.toLowerCase() === 'x' ? '[xX]' : `(?:[xX]|${escapeRx(xVar)})`;
+    const yVarPat = yVar.toLowerCase() === 'y' ? '[yY]' : `(?:[yY]|${escapeRx(yVar)})`;
+    const exactXRegex = new RegExp(`^${xVarPat}$`);
+    const exactYRegex = new RegExp(`^${yVarPat}$`);
+    const hasXRegex = new RegExp(`(?<![a-zA-Z])${xVarPat}(?![a-zA-Z])`);
+    const hasYRegex = new RegExp(`(?<![a-zA-Z])${yVarPat}(?![a-zA-Z])`);
+
     const results = [];
     pairs.forEach((p, idx) => {
-      const fnL = this.compileMathExpr2D(p.lhs);
-      const fnR = this.compileMathExpr2D(p.rhs);
+      const fnL = this.compileMathExpr2D(p.lhs, 'x', xVar, yVar);
+      const fnR = this.compileMathExpr2D(p.rhs, 'x', xVar, yVar);
       const diffFn = (x, y) => fnL(x, y) - fnR(x, y);
       const strict = p.op === '<' || p.op === '>';
       let checkFn;
@@ -927,18 +1156,18 @@ class MathArchiveApp {
         const lbl = idx === 0
           ? (opts.label !== undefined ? opts.label : this.formatInequalityDisplay(clause))
           : '';
-        const hasYInL = /[yY]/.test(p.lhs);
-        const hasYInR = /[yY]/.test(p.rhs);
-        const hasXInL = /[xX]/.test(p.lhs);
-        const hasXInR = /[xX]/.test(p.rhs);
+        const hasYInL = hasYRegex.test(p.lhs);
+        const hasYInR = hasYRegex.test(p.rhs);
+        const hasXInL = hasXRegex.test(p.lhs);
+        const hasXInR = hasXRegex.test(p.rhs);
 
-        if (/^[yY]$/.test(p.lhs) && !hasYInR) {
+        if (exactYRegex.test(p.lhs) && !hasYInR) {
           boundaryCurve = { type: 'y', fn: (x) => fnR(x, 0), color, dashed: isDashed, label: lbl };
-        } else if (/^[yY]$/.test(p.rhs) && !hasYInL) {
+        } else if (exactYRegex.test(p.rhs) && !hasYInL) {
           boundaryCurve = { type: 'y', fn: (x) => fnL(x, 0), color, dashed: isDashed, label: lbl };
-        } else if (/^[xX]$/.test(p.lhs) && !hasXInR) {
+        } else if (exactXRegex.test(p.lhs) && !hasXInR) {
           boundaryCurve = { type: 'x', fn: (y) => fnR(0, y), color, dashed: isDashed, label: lbl };
-        } else if (/^[xX]$/.test(p.rhs) && !hasXInL) {
+        } else if (exactXRegex.test(p.rhs) && !hasXInL) {
           boundaryCurve = { type: 'x', fn: (y) => fnL(0, y), color, dashed: isDashed, label: lbl };
         } else {
           boundaryCurve = { type: 'implicit', fn2d: diffFn, color, dashed: isDashed, label: lbl };
@@ -963,6 +1192,11 @@ class MathArchiveApp {
 
     const config = {
       title: '関数グラフ',
+      xLabel: 'x',
+      yLabel: 'y',
+      originLabel: 'O',
+      xVar: 'x',
+      yVar: 'y',
       domain: [-5, 5],
       range: [-5, 5],
       grid: true,
@@ -972,11 +1206,48 @@ class MathArchiveApp {
       points: []
     };
 
+    const lines = String(specText || '').split('\n');
+
+    // 第1パス: 座標軸ラベル (axes: [a, b], xlabel: a, ylabel: b 等) を先に読み取って変数名を確定
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+      const main = line.split('|')[0].trim();
+      const m = main.match(/^([a-zA-Z_]+)\s*:\s*(.+)$/);
+      if (!m) continue;
+      const key = m[1].toLowerCase();
+      const val = m[2].trim();
+      if (key === 'axes' || key === 'axis' || key === 'vars' || key === 'variables') {
+        const inner = val.replace(/^\[|\]$/g, '').split(',');
+        if (inner.length >= 2) {
+          config.xLabel = this.formatAxisLabelText(inner[0]) || 'x';
+          config.yLabel = this.formatAxisLabelText(inner[1]) || 'y';
+          config.xVar = this.extractAxisVariableName(config.xLabel, 'x');
+          config.yVar = this.extractAxisVariableName(config.yLabel, 'y');
+        }
+      } else if (key === 'xlabel' || key === 'xaxis' || key === 'x_label' || key === 'x_axis') {
+        config.xLabel = this.formatAxisLabelText(val) || 'x';
+        config.xVar = this.extractAxisVariableName(config.xLabel, 'x');
+      } else if (key === 'ylabel' || key === 'yaxis' || key === 'y_label' || key === 'y_axis') {
+        config.yLabel = this.formatAxisLabelText(val) || 'y';
+        config.yVar = this.extractAxisVariableName(config.yLabel, 'y');
+      } else if (key === 'origin') {
+        config.originLabel = this.formatAxisLabelText(val) || 'O';
+      }
+    }
+
+    const { xVar, yVar } = config;
+    const escapeRx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const xVarPat = xVar.toLowerCase() === 'x' ? '[xX]' : `(?:[xX]|${escapeRx(xVar)})`;
+    const yVarPat = yVar.toLowerCase() === 'y' ? '[yY]' : `(?:[yY]|${escapeRx(yVar)})`;
+    const lhsXEqualRegex = new RegExp(`^${xVarPat}\\s*=`);
+    const lhsYOrFuncEqualRegex = new RegExp(`^(?:${yVarPat}|[a-zA-Z]\\s*\\(\\s*${xVarPat}\\s*\\))\\s*=`);
+    const hasXInStrRegex = new RegExp(`(?<![a-zA-Z])${xVarPat}(?![a-zA-Z])`);
+
     const defaultIneqList = [];
     let defaultRegionColor = null;
     let defaultRegionLabel = '';
 
-    const lines = String(specText || '').split('\n');
     for (const rawLine of lines) {
       const line = rawLine.trim();
       if (!line || line.startsWith('#') || line.startsWith('//')) continue;
@@ -1010,11 +1281,14 @@ class MathArchiveApp {
           config.title = val;
           continue;
         }
-        if (key === 'domain' || key === 'xrange' || key === 'x') {
+        if (['axes', 'axis', 'vars', 'variables', 'xlabel', 'xaxis', 'x_label', 'x_axis', 'ylabel', 'yaxis', 'y_label', 'y_axis', 'origin'].includes(key)) {
+          continue;
+        }
+        if (key === 'domain' || key === 'xrange' || key === 'x' || key === xVar.toLowerCase()) {
           config.domain = this.parseBracketPair(val, config.domain);
           continue;
         }
-        if (key === 'range' || key === 'yrange' || key === 'y') {
+        if (key === 'range' || key === 'yrange' || key === 'y' || key === yVar.toLowerCase()) {
           config.range = this.parseBracketPair(val, config.range);
           continue;
         }
@@ -1031,7 +1305,7 @@ class MathArchiveApp {
           clauses.forEach((cl, cIdx) => {
             const cColor = clauses.length === 1 ? groupColor : (opts.color || nextColor());
             const cOpts = cIdx === 0 ? opts : { ...opts, label: this.formatInequalityDisplay(cl) };
-            const parsedList = this.parseSingleInequalityClause(cl, cColor, cOpts, true);
+            const parsedList = this.parseSingleInequalityClause(cl, cColor, cOpts, true, xVar, yVar);
             parsedList.forEach(item => {
               groupChecks.push(item);
               if (item.boundaryCurve) config.curves.push(item.boundaryCurve);
@@ -1050,8 +1324,8 @@ class MathArchiveApp {
         // 1. 面積・定積分塗りつぶし (shade: f(x), g(x) | from: a | to: b)
         if (key === 'shade' || key === 'area') {
           const exprs = val.split(',').map(e => e.trim()).filter(Boolean);
-          const fn1 = this.compileMathExpr(exprs[0].replace(/^[yY]\s*=\s*/, ''), 'x');
-          const fn2 = exprs[1] ? this.compileMathExpr(exprs[1].replace(/^[yY]\s*=\s*/, ''), 'x') : () => 0;
+          const fn1 = this.compileMathExpr(exprs[0].replace(lhsYOrFuncEqualRegex, ''), xVar, xVar, yVar);
+          const fn2 = exprs[1] ? this.compileMathExpr(exprs[1].replace(lhsYOrFuncEqualRegex, ''), xVar, xVar, yVar) : () => 0;
           let [fromX, toX] = opts.domain || opts.x
             ? this.parseBracketPair(opts.domain || opts.x, config.domain)
             : [...config.domain];
@@ -1087,8 +1361,8 @@ class MathArchiveApp {
 
         // 3. 接線の自動計算・描画 (tangent: f(x) | at: a)
         if (key === 'tangent') {
-          const cleanExpr = val.replace(/^[yY]\s*=\s*/, '');
-          const fn = this.compileMathExpr(cleanExpr, 'x');
+          const cleanExpr = val.replace(lhsYOrFuncEqualRegex, '');
+          const fn = this.compileMathExpr(cleanExpr, xVar, xVar, yVar);
           const a = this.evalMathConst(opts.at ?? opts.x ?? 0, 0);
           const fa = fn(a);
           const h = 1e-5;
@@ -1101,7 +1375,7 @@ class MathArchiveApp {
               color,
               dashed: Boolean(opts.dashed),
               dotted: Boolean(opts.dotted),
-              label: opts.label || `x=${a} における接線`,
+              label: opts.label || `${config.xLabel}=${a} における接線`,
               subDomain: opts.domain ? this.parseBracketPair(opts.domain, null) : null
             });
             config.points.push({
@@ -1119,8 +1393,8 @@ class MathArchiveApp {
         if (key === 'param' || key === 'parametric') {
           const pm = val.match(/\(\s*([^,]+)\s*,\s*([^)]+)\s*\)/);
           if (pm) {
-            const fx = this.compileMathExpr(pm[1], 't');
-            const fy = this.compileMathExpr(pm[2], 't');
+            const fx = this.compileMathExpr(pm[1], 't', 't', 'y');
+            const fy = this.compileMathExpr(pm[2], 't', 't', 'y');
             const tRange = this.parseBracketPair(opts.t || opts.domain || '[0, 2*pi]', [0, 2 * Math.PI]);
             config.curves.push({
               type: 'param',
@@ -1160,7 +1434,7 @@ class MathArchiveApp {
         }
       }
 
-      // 6. 不等式 (例: y >= x^2 - 1, x^2 + y^2 <= 4, 1 <= x^2 + y^2 < 4, x + 2y <= 6)
+      // 6. 不等式 (例: y >= x^2 - 1, b <= a^2/4, x^2 + y^2 <= 4)
       const normMain = this.normalizeInequalityOperators(main);
       if (/(<=|>=|<|>)/.test(normMain)) {
         const clauses = main.split(/\s*(?:&&|かつ|,)\s*/).filter(Boolean);
@@ -1168,7 +1442,7 @@ class MathArchiveApp {
           const cColor = opts.color || nextColor();
           if (!defaultRegionColor) defaultRegionColor = opts.region_color || '#3b82f6';
           if (opts.region_label) defaultRegionLabel = opts.region_label;
-          const parsedList = this.parseSingleInequalityClause(cl, cColor, opts, true);
+          const parsedList = this.parseSingleInequalityClause(cl, cColor, opts, true, xVar, yVar);
           parsedList.forEach(item => {
             defaultIneqList.push(item);
             if (item.boundaryCurve) config.curves.push(item.boundaryCurve);
@@ -1177,11 +1451,11 @@ class MathArchiveApp {
         continue;
       }
 
-      // 7. x = g(y) または垂直線 x = c (右辺に x を含まない場合)
-      if (/^[xX]\s*=/.test(main)) {
-        const rhs = main.replace(/^[xX]\s*=\s*/, '').trim();
-        if (!/[xX]/.test(rhs)) {
-          const fnY = this.compileMathExpr(rhs, 'y');
+      // 7. x = g(y) または a = g(b) または垂直線 x = c / a = c
+      if (lhsXEqualRegex.test(main)) {
+        const rhs = main.replace(lhsXEqualRegex, '').trim();
+        if (!hasXInStrRegex.test(rhs)) {
+          const fnY = this.compileMathExpr(rhs, yVar, xVar, yVar);
           config.curves.push({
             type: 'x',
             fn: fnY,
@@ -1195,12 +1469,12 @@ class MathArchiveApp {
         }
       }
 
-      // 8. 2変数陰関数方程式 F(x, y) = G(x, y) (例: x^2 + y^2 = 4, x^2/9 + y^2/4 = 1, x + 2y = 6)
-      if (main.includes('=') && !/^(?:[yY]|[a-zA-Z]\s*\(\s*x\s*\))\s*=/.test(main)) {
+      // 8. 2変数陰関数方程式 F(x, y) = G(x, y) または F(a, b) = G(a, b)
+      if (main.includes('=') && !lhsYOrFuncEqualRegex.test(main)) {
         const eqParts = main.split('=');
         if (eqParts.length === 2) {
-          const fnL = this.compileMathExpr2D(eqParts[0]);
-          const fnR = this.compileMathExpr2D(eqParts[1]);
+          const fnL = this.compileMathExpr2D(eqParts[0], 'x', xVar, yVar);
+          const fnR = this.compileMathExpr2D(eqParts[1], 'x', xVar, yVar);
           config.curves.push({
             type: 'implicit',
             fn2d: (x, y) => fnL(x, y) - fnR(x, y),
@@ -1213,12 +1487,12 @@ class MathArchiveApp {
         }
       }
 
-      // 9. 陽関数 y = f(x), f(x) = ..., または式のみ
+      // 9. 陽関数 y = f(x), b = f(a), f(x) = ..., または式のみ
       let exprStr = main;
-      if (/^(?:[yY]|[a-zA-Z]\s*\(\s*x\s*\))\s*=/.test(main)) {
-        exprStr = main.replace(/^(?:[yY]|[a-zA-Z]\s*\(\s*x\s*\))\s*=\s*/, '').trim();
+      if (lhsYOrFuncEqualRegex.test(main)) {
+        exprStr = main.replace(lhsYOrFuncEqualRegex, '').trim();
       }
-      const fnX = this.compileMathExpr(exprStr, 'x');
+      const fnX = this.compileMathExpr(exprStr, xVar, xVar, yVar);
       config.curves.push({
         type: 'y',
         fn: fnX,
@@ -1226,7 +1500,7 @@ class MathArchiveApp {
         color: opts.color || nextColor(),
         dashed: Boolean(opts.dashed),
         dotted: Boolean(opts.dotted),
-        label: opts.label !== undefined ? opts.label : (main.includes('=') ? main : `y = ${main}`),
+        label: opts.label !== undefined ? opts.label : (main.includes('=') ? main : `${config.yLabel} = ${main}`),
         subDomain: (opts.domain || opts.x) ? this.parseBracketPair(opts.domain || opts.x, null) : null
       });
     }
@@ -1385,11 +1659,16 @@ class MathArchiveApp {
     const view = { ...initView };
     let hoverState = null;
 
+    const xAxisName = spec.xLabel || 'x';
+    const yAxisName = spec.yLabel || 'y';
+    const originName = spec.originLabel || 'O';
+    const emptyCoordsText = `(${xAxisName}, ${yAxisName}) = (-, -)`;
+
     widgetEl.innerHTML = `
       <div class="graph-toolbar">
         <div class="graph-title">📈 ${this.escapeHtml(spec.title)}</div>
         <div class="graph-controls">
-          <span class="graph-coords-badge">(x, y) = (-, -)</span>
+          <span class="graph-coords-badge">${this.escapeHtml(emptyCoordsText)}</span>
           <button type="button" class="graph-ctrl-btn" data-act="zoom-in" title="拡大">＋</button>
           <button type="button" class="graph-ctrl-btn" data-act="zoom-out" title="縮小">－</button>
           <button type="button" class="graph-ctrl-btn" data-act="reset" title="表示範囲をリセット">リセット</button>
@@ -1670,16 +1949,16 @@ class MathArchiveApp {
         ctx.fillText(this.formatTickNumber(gy, yStep), Math.max(axisX0 - 6, 26), py);
       }
 
-      // 原点 O と x, y ラベル
-      ctx.font = 'italic 600 13px "Inter", serif';
+      // 原点 O と x軸, y軸 (または a軸, b軸等のカスタム軸) ラベル
+      ctx.font = 'italic 600 13px "Inter", "Noto Sans JP", serif';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'top';
       if (toPxX(0) >= 12 && toPxX(0) <= w - 12 && toPxY(0) >= 12 && toPxY(0) <= h - 12) {
-        ctx.fillText('O', axisX0 - 5, axisY0 + 4);
+        ctx.fillText(originName, axisX0 - 5, axisY0 + 4);
       }
-      ctx.fillText('x', w - 6, axisY0 - 18);
+      ctx.fillText(xAxisName, w - 6, axisY0 - 18);
       ctx.textAlign = 'left';
-      ctx.fillText('y', axisX0 + 8, 6);
+      ctx.fillText(yAxisName, axisX0 + 8, 6);
 
       // 4. 曲線・関数のプロット
       const samples = Math.min(Math.max(Math.round(w * 1.5), 600), 1200);
@@ -1864,9 +2143,9 @@ class MathArchiveApp {
           ctx.beginPath();
           ctx.arc(hoverState.px, snapPy, 5, 0, 2 * Math.PI);
           ctx.fill();
-          coordsBadge.textContent = `(x, y) = (${hx.toFixed(2)}, ${bestY.toFixed(2)})`;
+          coordsBadge.textContent = `(${xAxisName}, ${yAxisName}) = (${hx.toFixed(2)}, ${bestY.toFixed(2)})`;
         } else {
-          coordsBadge.textContent = `(x, y) = (${hx.toFixed(2)}, ${hy.toFixed(2)})`;
+          coordsBadge.textContent = `(${xAxisName}, ${yAxisName}) = (${hx.toFixed(2)}, ${hy.toFixed(2)})`;
         }
         ctx.restore();
       }
@@ -1918,7 +2197,7 @@ class MathArchiveApp {
     canvas.addEventListener('pointerleave', () => {
       isDragging = false;
       hoverState = null;
-      coordsBadge.textContent = '(x, y) = (-, -)';
+      coordsBadge.textContent = emptyCoordsText;
       draw();
     });
 
@@ -1971,14 +2250,55 @@ class MathArchiveApp {
   bindEditorPreview(textareaId, previewId) {
     const textarea = document.getElementById(textareaId);
     const preview = document.getElementById(previewId);
+    if (!textarea || !preview) return;
 
     const update = () => {
       this.renderMarkdownAndKaTeX(textarea.value, preview);
     };
 
+    textarea.addEventListener('focus', () => {
+      this.lastActiveTextarea = textarea;
+    });
+
     textarea.addEventListener('input', () => {
       clearTimeout(this.debounceTimers[textareaId]);
       this.debounceTimers[textareaId] = setTimeout(update, 150);
+    });
+
+    // クリップボードからの画像直接貼り付け (Ctrl + V)
+    textarea.addEventListener('paste', async (e) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const imageFiles = [];
+      for (const item of items) {
+        if (item.type && item.type.startsWith('image/')) {
+          const file = item.getAsFile();
+          if (file) imageFiles.push(file);
+        }
+      }
+      if (imageFiles.length > 0) {
+        e.preventDefault();
+        await this.handleImageFilesInsert(imageFiles, textarea);
+      }
+    });
+
+    // 画像ファイルのドラッグ＆ドロップ挿入
+    textarea.addEventListener('dragover', (e) => {
+      if (e.dataTransfer?.types?.includes('Files')) {
+        e.preventDefault();
+        textarea.classList.add('drag-over');
+      }
+    });
+    textarea.addEventListener('dragleave', () => {
+      textarea.classList.remove('drag-over');
+    });
+    textarea.addEventListener('drop', async (e) => {
+      textarea.classList.remove('drag-over');
+      const files = Array.from(e.dataTransfer?.files || []).filter(f => f.type && f.type.startsWith('image/'));
+      if (files.length > 0) {
+        e.preventDefault();
+        await this.handleImageFilesInsert(files, textarea);
+      }
     });
   }
 
@@ -2457,6 +2777,7 @@ class MathArchiveApp {
     if (!q) return;
 
     this.editingId = id;
+    this.activeImages = { ...(q.images || {}) };
     document.getElementById('form-id').value = q.id;
     document.getElementById('form-title').value = q.title || '';
     document.getElementById('form-category').value = q.category || '';
@@ -2483,6 +2804,7 @@ class MathArchiveApp {
 
   resetForm() {
     this.editingId = null;
+    this.activeImages = {};
     document.getElementById('question-form').reset();
     document.getElementById('form-id').value = '';
     document.getElementById('form-difficulty').value = 3;
@@ -2513,6 +2835,20 @@ class MathArchiveApp {
       return;
     }
 
+    // 問題文・ヒント・解答・別解内で参照されている img:img-xxx の画像データのみを抽出して保存
+    const allText = `${problem}\n${hint}\n${solution}\n${alternative}`;
+    const usedImages = {};
+    const imgRefRegex = /img:(img-[a-zA-Z0-9_-]+)/g;
+    let m;
+    while ((m = imgRefRegex.exec(allText)) !== null) {
+      const refId = m[1];
+      const dataUrl = this.getImageDataUrl(refId);
+      if (dataUrl) {
+        usedImages[refId] = dataUrl;
+      }
+    }
+    const hasImages = Object.keys(usedImages).length > 0;
+
     const now = new Date().toISOString();
     let targetId = this.editingId;
 
@@ -2530,6 +2866,7 @@ class MathArchiveApp {
           hint,
           solution,
           alternative,
+          images: hasImages ? usedImages : undefined,
           updatedAt: now
         };
         this.showToast(`問題「${title}」を更新しました`);
@@ -2547,6 +2884,7 @@ class MathArchiveApp {
         hint,
         solution,
         alternative,
+        ...(hasImages ? { images: usedImages } : {}),
         createdAt: now,
         updatedAt: now
       };
