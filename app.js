@@ -635,17 +635,19 @@ class MathArchiveApp {
   }
 
   // --------------------------------------------------------
-  // インタラクティブ関数グラフ描画エンジン (Canvas / 数式パーサー)
+  // インタラクティブ関数グラフ描画エンジン (Canvas / 数式・不等式パーサー)
   // --------------------------------------------------------
-  compileMathExpr(rawExpr, varName = 'x') {
+  compileMathExpr2D(rawExpr, primaryVar = 'x') {
     if (!rawExpr || !String(rawExpr).trim()) return () => NaN;
     let s = String(rawExpr).trim().replace(/^\$+|\$+$/g, '').trim();
 
     // 全角記号・LaTeX構文の正規化
     s = s.replace(/＋/g, '+')
          .replace(/[－−–—]/g, '-')
-         .replace(/[＊×\\times\\cdot]/g, '*')
-         .replace(/[／÷\\div]/g, '/')
+         .replace(/[＊×]/g, '*')
+         .replace(/\\times\b|\\cdot\b/g, '*')
+         .replace(/[／÷]/g, '/')
+         .replace(/\\div\b/g, '/')
          .replace(/＾/g, '^')
          .replace(/（/g, '(')
          .replace(/）/g, ')')
@@ -681,7 +683,7 @@ class MathArchiveApp {
     };
     const FUNC_NAMES = Object.keys(FUNC_MAP).sort((a, b) => b.length - a.length);
 
-    // トークナイザー
+    // トークナイザー (2変数 x, y および媒介変数 t 対応)
     const rawTokens = [];
     let i = 0;
     while (i < s.length) {
@@ -708,7 +710,7 @@ class MathArchiveApp {
         for (const fn of FUNC_NAMES) {
           if (rest.toLowerCase().startsWith(fn)) {
             const after = rest[fn.length] || '';
-            if (!/[a-zA-Z]/.test(after) || after.toLowerCase() === varName.toLowerCase()) {
+            if (!/[a-zA-Z]/.test(after) || /^[xyzt]$/i.test(after)) {
               rawTokens.push({ type: 'FUNC', fn: FUNC_MAP[fn], name: fn });
               i += fn.length;
               matched = true;
@@ -723,8 +725,18 @@ class MathArchiveApp {
           i += 2;
           continue;
         }
-        if (ch.toLowerCase() === varName.toLowerCase()) {
-          rawTokens.push({ type: 'VAR' });
+        if (ch === 'x' || ch === 'X') {
+          rawTokens.push({ type: 'VAR_X' });
+          i++;
+          continue;
+        }
+        if (ch === 'y' || ch === 'Y') {
+          rawTokens.push({ type: 'VAR_Y' });
+          i++;
+          continue;
+        }
+        if (ch.toLowerCase() === primaryVar.toLowerCase()) {
+          rawTokens.push({ type: 'VAR_X' });
           i++;
           continue;
         }
@@ -733,30 +745,26 @@ class MathArchiveApp {
           i++;
           continue;
         }
-        // 未知の文字は変数として扱うかスキップ
-        rawTokens.push({ type: 'VAR' });
+        rawTokens.push({ type: 'VAR_X' });
         i++;
         continue;
       }
       i++;
     }
 
-    // 暗黙の乗算 (*) を補完 (例: 2x -> 2*x, (x+1)(x-1) -> (x+1)*(x-1), 2sin(x) -> 2*sin(x))
+    // 暗黙の乗算 (*) を補完 (例: 2x -> 2*x, 2xy -> 2*x*y, (x-y)(x+y) -> (x-y)*(x+y))
+    const isValToken = (t) => t.type === 'NUMBER' || t.type === 'CONST' || t.type === 'VAR_X' || t.type === 'VAR_Y' || t.type === 'RPAREN';
+    const isRightValToken = (t) => t.type === 'NUMBER' || t.type === 'CONST' || t.type === 'VAR_X' || t.type === 'VAR_Y' || t.type === 'FUNC' || t.type === 'LPAREN';
     const tokens = [];
     for (let k = 0; k < rawTokens.length; k++) {
       const curr = rawTokens[k];
-      if (k > 0) {
-        const prev = rawTokens[k - 1];
-        const prevIsVal = prev.type === 'NUMBER' || prev.type === 'CONST' || prev.type === 'VAR' || prev.type === 'RPAREN';
-        const currIsVal = curr.type === 'NUMBER' || curr.type === 'CONST' || curr.type === 'VAR' || curr.type === 'FUNC' || curr.type === 'LPAREN';
-        if (prevIsVal && currIsVal) {
-          tokens.push({ type: 'OP', value: '*' });
-        }
+      if (k > 0 && isValToken(rawTokens[k - 1]) && isRightValToken(curr)) {
+        tokens.push({ type: 'OP', value: '*' });
       }
       tokens.push(curr);
     }
 
-    // 再帰下降パーサー (-x^2 = -(x^2), e^-x = e^(-x) の数学的優先順位を厳密に保持)
+    // 再帰下降パーサー (-x^2 = -(x^2), e^-x = e^(-x))
     let pos = 0;
     const peek = () => tokens[pos];
     const consume = () => tokens[pos++];
@@ -767,7 +775,7 @@ class MathArchiveApp {
         const op = consume().value;
         const right = parseTerm();
         const prevLeft = left;
-        left = op === '+' ? (v) => prevLeft(v) + right(v) : (v) => prevLeft(v) - right(v);
+        left = op === '+' ? (x, y) => prevLeft(x, y) + right(x, y) : (x, y) => prevLeft(x, y) - right(x, y);
       }
       return left;
     };
@@ -778,7 +786,7 @@ class MathArchiveApp {
         const op = consume().value;
         const right = parseUnary();
         const prevLeft = left;
-        left = op === '*' ? (v) => prevLeft(v) * right(v) : (v) => prevLeft(v) / right(v);
+        left = op === '*' ? (x, y) => prevLeft(x, y) * right(x, y) : (x, y) => prevLeft(x, y) / right(x, y);
       }
       return left;
     };
@@ -787,7 +795,7 @@ class MathArchiveApp {
       if (peek() && peek().type === 'OP' && (peek().value === '+' || peek().value === '-')) {
         const op = consume().value;
         const operand = parseUnary();
-        return op === '-' ? (v) => -operand(v) : operand;
+        return op === '-' ? (x, y) => -operand(x, y) : operand;
       }
       return parsePower();
     };
@@ -796,8 +804,8 @@ class MathArchiveApp {
       const base = parsePrimary();
       if (peek() && peek().type === 'OP' && peek().value === '^') {
         consume();
-        const exp = parseUnary(); // 右結合かつ指数部の単項マイナス (e^-x) を許容
-        return (v) => Math.pow(base(v), exp(v));
+        const exp = parseUnary();
+        return (x, y) => Math.pow(base(x, y), exp(x, y));
       }
       return base;
     };
@@ -807,7 +815,8 @@ class MathArchiveApp {
       if (!t) return () => NaN;
       if (t.type === 'NUMBER') { consume(); const val = t.value; return () => val; }
       if (t.type === 'CONST') { consume(); const val = t.value; return () => val; }
-      if (t.type === 'VAR') { consume(); return (v) => v; }
+      if (t.type === 'VAR_X') { consume(); return (x) => x; }
+      if (t.type === 'VAR_Y') { consume(); return (_, y) => y; }
       if (t.type === 'FUNC') {
         consume();
         const fn = t.fn;
@@ -815,10 +824,10 @@ class MathArchiveApp {
           consume();
           const arg = parseExpr();
           if (peek() && peek().type === 'RPAREN') consume();
-          return (v) => fn(arg(v));
+          return (x, y) => fn(arg(x, y));
         }
         const arg = parseUnary();
-        return (v) => fn(arg(v));
+        return (x, y) => fn(arg(x, y));
       }
       if (t.type === 'LPAREN') {
         consume();
@@ -832,9 +841,9 @@ class MathArchiveApp {
 
     try {
       const ast = parseExpr();
-      return (v) => {
+      return (x, y = 0) => {
         try {
-          const res = ast(v);
+          const res = ast(x, y);
           return typeof res === 'number' ? res : NaN;
         } catch (_) {
           return NaN;
@@ -845,9 +854,17 @@ class MathArchiveApp {
     }
   }
 
+  compileMathExpr(rawExpr, varName = 'x') {
+    const fn2d = this.compileMathExpr2D(rawExpr, varName);
+    if (varName.toLowerCase() === 'y') {
+      return (y) => fn2d(0, y);
+    }
+    return (x) => fn2d(x, 0);
+  }
+
   evalMathConst(exprStr, fallback = 0) {
     if (exprStr === undefined || exprStr === null) return fallback;
-    const val = this.compileMathExpr(String(exprStr), 'x')(0);
+    const val = this.compileMathExpr2D(String(exprStr))(0, 0);
     return Number.isFinite(val) ? val : fallback;
   }
 
@@ -857,6 +874,86 @@ class MathArchiveApp {
     const a = this.evalMathConst(m[1], fallback[0]);
     const b = this.evalMathConst(m[2], fallback[1]);
     return a < b ? [a, b] : fallback;
+  }
+
+  normalizeInequalityOperators(str) {
+    return String(str)
+      .replace(/\\(?:leqq|leqslant|le)\b|[≦≤]/g, '<=')
+      .replace(/\\(?:geqq|geqslant|ge)\b|[≧≥]/g, '>=')
+      .replace(/\\lt\b/g, '<')
+      .replace(/\\gt\b/g, '>');
+  }
+
+  formatInequalityDisplay(str) {
+    return String(str)
+      .replace(/<=/g, ' ≦ ')
+      .replace(/>=/g, ' ≧ ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  parseSingleInequalityClause(clause, color, opts, addBoundaryCurve = true) {
+    const norm = this.normalizeInequalityOperators(clause);
+    const tokens = norm.split(/(<=|>=|<|>)/).map(t => t.trim());
+    if (tokens.length < 3) return [];
+
+    // a <= b <= c のような連なった不等式も分解して両方サポート
+    const pairs = [];
+    for (let i = 0; i <= tokens.length - 3; i += 2) {
+      const lhs = tokens[i];
+      const op = tokens[i + 1];
+      const rhs = tokens[i + 2];
+      if (lhs && op && rhs) {
+        pairs.push({ lhs, op, rhs });
+      }
+    }
+
+    const results = [];
+    pairs.forEach((p, idx) => {
+      const fnL = this.compileMathExpr2D(p.lhs);
+      const fnR = this.compileMathExpr2D(p.rhs);
+      const diffFn = (x, y) => fnL(x, y) - fnR(x, y);
+      const strict = p.op === '<' || p.op === '>';
+      let checkFn;
+      if (p.op === '<=') checkFn = (x, y) => diffFn(x, y) <= 1e-9;
+      else if (p.op === '<') checkFn = (x, y) => diffFn(x, y) < -1e-9;
+      else if (p.op === '>=') checkFn = (x, y) => diffFn(x, y) >= -1e-9;
+      else checkFn = (x, y) => diffFn(x, y) > 1e-9;
+
+      // 境界線データの自動生成 (実線: 境界を含む / 破線: 境界を含まない)
+      let boundaryCurve = null;
+      if (addBoundaryCurve && opts.boundary !== 'false' && !opts.noboundary) {
+        const isDashed = opts.dashed !== undefined ? Boolean(opts.dashed) : strict;
+        const lbl = idx === 0
+          ? (opts.label !== undefined ? opts.label : this.formatInequalityDisplay(clause))
+          : '';
+        const hasYInL = /[yY]/.test(p.lhs);
+        const hasYInR = /[yY]/.test(p.rhs);
+        const hasXInL = /[xX]/.test(p.lhs);
+        const hasXInR = /[xX]/.test(p.rhs);
+
+        if (/^[yY]$/.test(p.lhs) && !hasYInR) {
+          boundaryCurve = { type: 'y', fn: (x) => fnR(x, 0), color, dashed: isDashed, label: lbl };
+        } else if (/^[yY]$/.test(p.rhs) && !hasYInL) {
+          boundaryCurve = { type: 'y', fn: (x) => fnL(x, 0), color, dashed: isDashed, label: lbl };
+        } else if (/^[xX]$/.test(p.lhs) && !hasXInR) {
+          boundaryCurve = { type: 'x', fn: (y) => fnR(0, y), color, dashed: isDashed, label: lbl };
+        } else if (/^[xX]$/.test(p.rhs) && !hasXInL) {
+          boundaryCurve = { type: 'x', fn: (y) => fnL(0, y), color, dashed: isDashed, label: lbl };
+        } else {
+          boundaryCurve = { type: 'implicit', fn2d: diffFn, color, dashed: isDashed, label: lbl };
+        }
+      }
+
+      results.push({
+        checkFn,
+        strict,
+        color,
+        boundaryCurve
+      });
+    });
+
+    return results;
   }
 
   parseGraphSpec(specText) {
@@ -870,9 +967,14 @@ class MathArchiveApp {
       range: [-5, 5],
       grid: true,
       shades: [],
+      ineqGroups: [],
       curves: [],
       points: []
     };
+
+    const defaultIneqList = [];
+    let defaultRegionColor = null;
+    let defaultRegionLabel = '';
 
     const lines = String(specText || '').split('\n');
     for (const rawLine of lines) {
@@ -889,6 +991,7 @@ class MathArchiveApp {
         if (lower === 'dashed') { opts.dashed = true; continue; }
         if (lower === 'dotted') { opts.dotted = true; continue; }
         if (lower === 'guide') { opts.guide = true; continue; }
+        if (lower === 'noboundary') { opts.noboundary = true; continue; }
         const kv = opt.match(/^([a-zA-Z_]+)\s*:\s*(.+)$/);
         if (kv) {
           const k = kv[1].toLowerCase();
@@ -917,6 +1020,30 @@ class MathArchiveApp {
         }
         if (key === 'grid') {
           config.grid = val.toLowerCase() !== 'false';
+          continue;
+        }
+
+        // 0. 不等式領域グループ指定 (region: x >= 0, y >= 0, x + y <= 3 | color: #3b82f6 | label: 領域 D)
+        if (key === 'region' || key === 'ineq' || key === 'system') {
+          const clauses = val.split(/\s*(?:&&|かつ|,)\s*/).filter(Boolean);
+          const groupColor = opts.color || nextColor();
+          const groupChecks = [];
+          clauses.forEach((cl, cIdx) => {
+            const cColor = clauses.length === 1 ? groupColor : (opts.color || nextColor());
+            const cOpts = cIdx === 0 ? opts : { ...opts, label: this.formatInequalityDisplay(cl) };
+            const parsedList = this.parseSingleInequalityClause(cl, cColor, cOpts, true);
+            parsedList.forEach(item => {
+              groupChecks.push(item);
+              if (item.boundaryCurve) config.curves.push(item.boundaryCurve);
+            });
+          });
+          if (groupChecks.length > 0) {
+            config.ineqGroups.push({
+              items: groupChecks,
+              color: groupColor,
+              label: opts.label || ''
+            });
+          }
           continue;
         }
 
@@ -1033,23 +1160,60 @@ class MathArchiveApp {
         }
       }
 
-      // 6. x = g(y) または垂直線 x = c
-      if (/^[xX]\s*=/.test(main)) {
-        const rhs = main.replace(/^[xX]\s*=\s*/, '').trim();
-        const fnY = this.compileMathExpr(rhs, 'y');
-        config.curves.push({
-          type: 'x',
-          fn: fnY,
-          rawExpr: main,
-          color: opts.color || nextColor(),
-          dashed: Boolean(opts.dashed),
-          dotted: Boolean(opts.dotted),
-          label: opts.label !== undefined ? opts.label : main
+      // 6. 不等式 (例: y >= x^2 - 1, x^2 + y^2 <= 4, 1 <= x^2 + y^2 < 4, x + 2y <= 6)
+      const normMain = this.normalizeInequalityOperators(main);
+      if (/(<=|>=|<|>)/.test(normMain)) {
+        const clauses = main.split(/\s*(?:&&|かつ|,)\s*/).filter(Boolean);
+        clauses.forEach((cl) => {
+          const cColor = opts.color || nextColor();
+          if (!defaultRegionColor) defaultRegionColor = opts.region_color || '#3b82f6';
+          if (opts.region_label) defaultRegionLabel = opts.region_label;
+          const parsedList = this.parseSingleInequalityClause(cl, cColor, opts, true);
+          parsedList.forEach(item => {
+            defaultIneqList.push(item);
+            if (item.boundaryCurve) config.curves.push(item.boundaryCurve);
+          });
         });
         continue;
       }
 
-      // 7. 陽関数 y = f(x), f(x) = ..., または式のみ
+      // 7. x = g(y) または垂直線 x = c (右辺に x を含まない場合)
+      if (/^[xX]\s*=/.test(main)) {
+        const rhs = main.replace(/^[xX]\s*=\s*/, '').trim();
+        if (!/[xX]/.test(rhs)) {
+          const fnY = this.compileMathExpr(rhs, 'y');
+          config.curves.push({
+            type: 'x',
+            fn: fnY,
+            rawExpr: main,
+            color: opts.color || nextColor(),
+            dashed: Boolean(opts.dashed),
+            dotted: Boolean(opts.dotted),
+            label: opts.label !== undefined ? opts.label : main
+          });
+          continue;
+        }
+      }
+
+      // 8. 2変数陰関数方程式 F(x, y) = G(x, y) (例: x^2 + y^2 = 4, x^2/9 + y^2/4 = 1, x + 2y = 6)
+      if (main.includes('=') && !/^(?:[yY]|[a-zA-Z]\s*\(\s*x\s*\))\s*=/.test(main)) {
+        const eqParts = main.split('=');
+        if (eqParts.length === 2) {
+          const fnL = this.compileMathExpr2D(eqParts[0]);
+          const fnR = this.compileMathExpr2D(eqParts[1]);
+          config.curves.push({
+            type: 'implicit',
+            fn2d: (x, y) => fnL(x, y) - fnR(x, y),
+            color: opts.color || nextColor(),
+            dashed: Boolean(opts.dashed),
+            dotted: Boolean(opts.dotted),
+            label: opts.label !== undefined ? opts.label : main
+          });
+          continue;
+        }
+      }
+
+      // 9. 陽関数 y = f(x), f(x) = ..., または式のみ
       let exprStr = main;
       if (/^(?:[yY]|[a-zA-Z]\s*\(\s*x\s*\))\s*=/.test(main)) {
         exprStr = main.replace(/^(?:[yY]|[a-zA-Z]\s*\(\s*x\s*\))\s*=\s*/, '').trim();
@@ -1067,7 +1231,130 @@ class MathArchiveApp {
       });
     }
 
+    if (defaultIneqList.length > 0) {
+      config.ineqGroups.push({
+        items: defaultIneqList,
+        color: defaultRegionColor || '#3b82f6',
+        label: defaultRegionLabel
+      });
+    }
+
     return config;
+  }
+
+  // マーチング・スクエア法による2変数陰関数 F(x, y) = 0 の連続ポリライン抽出
+  traceImplicitContourPolylines(fn2d, view, w, h) {
+    const nx = 140;
+    const ny = 140;
+    const vals = new Float64Array((nx + 1) * (ny + 1));
+    for (let j = 0; j <= ny; j++) {
+      const y = view.ymax - (j / ny) * (view.ymax - view.ymin);
+      for (let i = 0; i <= nx; i++) {
+        const x = view.xmin + (i / nx) * (view.xmax - view.xmin);
+        vals[j * (nx + 1) + i] = fn2d(x, y);
+      }
+    }
+
+    const cellW = w / nx;
+    const cellH = h / ny;
+    const interp = (v1, v2) => {
+      const denom = v1 - v2;
+      if (Math.abs(denom) < 1e-12) return 0.5;
+      return Math.min(Math.max(v1 / denom, 0), 1);
+    };
+
+    const segments = [];
+    for (let j = 0; j < ny; j++) {
+      const py0 = j * cellH;
+      const py1 = (j + 1) * cellH;
+      for (let i = 0; i < nx; i++) {
+        const px0 = i * cellW;
+        const px1 = (i + 1) * cellW;
+
+        const v0 = vals[j * (nx + 1) + i];
+        const v1 = vals[j * (nx + 1) + (i + 1)];
+        const v2 = vals[(j + 1) * (nx + 1) + (i + 1)];
+        const v3 = vals[(j + 1) * (nx + 1) + i];
+
+        if (!Number.isFinite(v0) || !Number.isFinite(v1) || !Number.isFinite(v2) || !Number.isFinite(v3)) continue;
+
+        let mask = 0;
+        if (v0 >= 0) mask |= 1;
+        if (v1 >= 0) mask |= 2;
+        if (v2 >= 0) mask |= 4;
+        if (v3 >= 0) mask |= 8;
+        if (mask === 0 || mask === 15) continue;
+
+        const top = { x: px0 + interp(v0, v1) * cellW, y: py0 };
+        const right = { x: px1, y: py0 + interp(v1, v2) * cellH };
+        const bottom = { x: px0 + interp(v3, v2) * cellW, y: py1 };
+        const left = { x: px0, y: py0 + interp(v0, v3) * cellH };
+
+        const addSeg = (pA, pB) => segments.push({ x1: pA.x, y1: pA.y, x2: pB.x, y2: pB.y, used: false });
+
+        switch (mask) {
+          case 1: case 14: addSeg(left, top); break;
+          case 2: case 13: addSeg(top, right); break;
+          case 3: case 12: addSeg(left, right); break;
+          case 4: case 11: addSeg(right, bottom); break;
+          case 5: addSeg(left, bottom); addSeg(top, right); break;
+          case 6: case 9: addSeg(top, bottom); break;
+          case 7: case 8: addSeg(left, bottom); break;
+          case 10: addSeg(left, top); addSeg(bottom, right); break;
+        }
+      }
+    }
+
+    // 破線 (setLineDash) が綺麗に描画されるよう隣接セグメントを連続ポリラインに結合
+    const keyOf = (x, y) => `${Math.round(x * 4)},${Math.round(y * 4)}`;
+    const endpointMap = new Map();
+    segments.forEach((seg, idx) => {
+      const k1 = keyOf(seg.x1, seg.y1);
+      const k2 = keyOf(seg.x2, seg.y2);
+      if (!endpointMap.has(k1)) endpointMap.set(k1, []);
+      if (!endpointMap.has(k2)) endpointMap.set(k2, []);
+      endpointMap.get(k1).push({ idx, atStart: true });
+      endpointMap.get(k2).push({ idx, atStart: false });
+    });
+
+    const polylines = [];
+    for (let i = 0; i < segments.length; i++) {
+      const startSeg = segments[i];
+      if (startSeg.used) continue;
+      startSeg.used = true;
+
+      const chain = [{ x: startSeg.x1, y: startSeg.y1 }, { x: startSeg.x2, y: startSeg.y2 }];
+
+      // 前方へ延長
+      let curr = chain[chain.length - 1];
+      while (true) {
+        const list = endpointMap.get(keyOf(curr.x, curr.y));
+        if (!list) break;
+        const nextEntry = list.find(entry => !segments[entry.idx].used);
+        if (!nextEntry) break;
+        const nextSeg = segments[nextEntry.idx];
+        nextSeg.used = true;
+        curr = nextEntry.atStart ? { x: nextSeg.x2, y: nextSeg.y2 } : { x: nextSeg.x1, y: nextSeg.y1 };
+        chain.push(curr);
+      }
+
+      // 後方へ延長
+      curr = chain[0];
+      while (true) {
+        const list = endpointMap.get(keyOf(curr.x, curr.y));
+        if (!list) break;
+        const prevEntry = list.find(entry => !segments[entry.idx].used);
+        if (!prevEntry) break;
+        const prevSeg = segments[prevEntry.idx];
+        prevSeg.used = true;
+        curr = prevEntry.atStart ? { x: prevSeg.x2, y: prevSeg.y2 } : { x: prevSeg.x1, y: prevSeg.y1 };
+        chain.unshift(curr);
+      }
+
+      polylines.push(chain);
+    }
+
+    return polylines;
   }
 
   niceGridStep(span) {
@@ -1130,6 +1417,17 @@ class MathArchiveApp {
       const lbl = sh.label || `面積区間 [${Number(sh.from.toFixed(2))}, ${Number(sh.to.toFixed(2))}]`;
       legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch swatch-shade" style="background:${this.escapeHtml(sh.color)}"></span><span>${this.escapeHtml(lbl)}</span></span>`);
     });
+    if (spec.ineqGroups && spec.ineqGroups.length > 0) {
+      spec.ineqGroups.forEach(grp => {
+        const hasStrict = grp.items.some(it => it.strict);
+        const hasInclusive = grp.items.some(it => !it.strict);
+        let boundaryNote = '境界線を含む（実線）';
+        if (hasStrict && hasInclusive) boundaryNote = '実線:境界を含む / 破線:含まない';
+        else if (hasStrict) boundaryNote = '境界線を含まない（破線）';
+        const lbl = grp.label ? `${grp.label}（${boundaryNote}）` : `不等式の領域（${boundaryNote}）`;
+        legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch swatch-shade" style="background:${this.escapeHtml(grp.color)}"></span><span>${this.escapeHtml(lbl)}</span></span>`);
+      });
+    }
     spec.points.forEach(pt => {
       if (pt.label) {
         legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch swatch-point" style="background:${this.escapeHtml(pt.color)}"></span><span>${this.escapeHtml(pt.label)}</span></span>`);
@@ -1255,6 +1553,67 @@ class MathArchiveApp {
         ctx.stroke();
         ctx.restore();
       });
+
+      // 2.5. 2変数不等式・連立不等式の領域塗りつぶし (半透明カラー + 45度斜線ハッチング)
+      if (spec.ineqGroups && spec.ineqGroups.length > 0) {
+        spec.ineqGroups.forEach(grp => {
+          const inRegion = (px, py) => {
+            const x = toMathX(px);
+            const y = toMathY(py);
+            for (let k = 0; k < grp.items.length; k++) {
+              if (!grp.items[k].checkFn(x, y)) return false;
+            }
+            return true;
+          };
+
+          // (a) 半透明スキャンライン塗りつぶし
+          ctx.save();
+          ctx.fillStyle = grp.color;
+          ctx.globalAlpha = isDark ? 0.22 : 0.17;
+          const stepPx = 2;
+          for (let py = 0; py < h; py += stepPx) {
+            let runStart = -1;
+            for (let px = 0; px <= w; px += stepPx) {
+              const inside = px < w && inRegion(px + 0.5, py + 0.5);
+              if (inside && runStart < 0) {
+                runStart = px;
+              } else if (!inside && runStart >= 0) {
+                ctx.fillRect(runStart, py, px - runStart, stepPx);
+                runStart = -1;
+              }
+            }
+          }
+
+          // (b) 教科書風の45度ベクター斜線ハッチング
+          ctx.strokeStyle = grp.color;
+          ctx.globalAlpha = isDark ? 0.48 : 0.38;
+          ctx.lineWidth = 1.15;
+          ctx.beginPath();
+          const spacing = 10;
+          const diagStep = 2;
+          for (let d = 0; d < w + h; d += spacing) {
+            const tStart = Math.max(0, d - w);
+            const tEnd = Math.min(h, d);
+            let drawingSeg = false;
+            for (let t = tStart; t <= tEnd; t += diagStep) {
+              const px = d - t;
+              const py = t;
+              if (inRegion(px, py)) {
+                if (!drawingSeg) {
+                  ctx.moveTo(px, py);
+                  drawingSeg = true;
+                } else {
+                  ctx.lineTo(px, py);
+                }
+              } else if (drawingSeg) {
+                drawingSeg = false;
+              }
+            }
+          }
+          ctx.stroke();
+          ctx.restore();
+        });
+      }
 
       // 3. 座標軸 (x軸・y軸・矢印・目盛り・原点O)
       const axisX0 = Math.min(Math.max(toPxX(0), 24), w - 24);
@@ -1387,6 +1746,15 @@ class MathArchiveApp {
             if (!drawing) { ctx.moveTo(px, py); drawing = true; }
             else { ctx.lineTo(px, py); }
           }
+        } else if (curve.type === 'implicit') {
+          const polylines = this.traceImplicitContourPolylines(curve.fn2d, view, w, h);
+          polylines.forEach(chain => {
+            if (chain.length < 2) return;
+            ctx.moveTo(chain[0].x, chain[0].y);
+            for (let k = 1; k < chain.length; k++) {
+              ctx.lineTo(chain[k].x, chain[k].y);
+            }
+          });
         }
         ctx.stroke();
         ctx.restore();
