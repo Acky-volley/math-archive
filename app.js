@@ -47,10 +47,10 @@ const FALLBACK_QUESTIONS = [
     "tags": ["微分積分", "面積", "1/12公式"],
     "problem": "放物線 $C: y = x^2$ と、その上の2点 $P(-1, 1)$, $Q(2, 4)$ における接線 $\\ell_1, \\ell_2$ を考える。\n\n1. 接線 $\\ell_1, \\ell_2$ の方程式およびその交点の座標を求めよ。\n2. 放物線 $C$ と2本の接線 $\\ell_1, \\ell_2$ で囲まれた図形の面積 $S$ を求めよ。",
     "hint": "2本の接線の交点の $x$ 座標は、2つの接点の $x$ 座標の中点になります。\n面積の計算では $(x - \\alpha)^2$ の積分形を活用すると計算が格段に楽になります。",
-    "solution": "### 【解答】\n\n$y = x^2$ より $y' = 2x$ である。\n\n#### (1) 接線の方程式と交点\n- $\\ell_1: y = -2x - 1$\n- $\\ell_2: y = 4x - 4$\n\n連立すると交点座標は $\\displaystyle \\left( \\frac{1}{2}, -2 \\right)$ である。\n\n#### (2) 囲まれた面積 $S$\n$$S = \\int_{-1}^{\\frac{1}{2}} (x + 1)^2 dx + \\int_{\\frac{1}{2}}^{2} (x - 2)^2 dx = \\frac{9}{8} + \\frac{9}{8} = \\frac{9}{4}$$\n\n**答:** (1) 交点 $\\left(\\frac{1}{2}, -2\\right)$　(2) $S = \\displaystyle \\frac{9}{4}$",
+    "solution": "### 【解答】\n\n$y = x^2$ より $y' = 2x$ である。\n\n#### (1) 接線の方程式と交点\n- $\\ell_1: y = -2x - 1$\n- $\\ell_2: y = 4x - 4$\n\n連立すると交点座標は $\\displaystyle \\left( \\frac{1}{2}, -2 \\right)$ である。\n\n```graph\ntitle: 放物線 C: y = x^2 と2接線 l₁, l₂ で囲まれる面積 S\ndomain: [-2.2, 2.8]\nrange: [-3, 5]\nshade: x^2, -2x - 1 | from: -1 | to: 0.5 | color: #3b82f6 | label: 左側領域 [-1, 1/2]\nshade: x^2, 4x - 4 | from: 0.5 | to: 2 | color: #3b82f6 | label: 右側領域 [1/2, 2]\ny = x^2 | label: C: y = x^2 | color: #2563eb\ny = -2x - 1 | label: l₁: y = -2x - 1 | color: #10b981\ny = 4x - 4 | label: l₂: y = 4x - 4 | color: #f59e0b\npoint: (-1, 1) | label: P(-1, 1) | color: #10b981 | guide\npoint: (2, 4) | label: Q(2, 4) | color: #f59e0b | guide\npoint: (1/2, -2) | label: 交点(1/2, -2) | color: #ef4444 | guide\n```\n\n#### (2) 囲まれた面積 $S$\n$$S = \\int_{-1}^{\\frac{1}{2}} (x + 1)^2 dx + \\int_{\\frac{1}{2}}^{2} (x - 2)^2 dx = \\frac{9}{8} + \\frac{9}{8} = \\frac{9}{4}$$\n\n**答:** (1) 交点 $\\left(\\frac{1}{2}, -2\\right)$　(2) $S = \\displaystyle \\frac{9}{4}$",
     "alternative": "#### 【1/12公式による検算】\n$$S = \\frac{|a|}{12} (\\beta - \\alpha)^3 = \\frac{1}{12} (2 - (-1))^3 = \\frac{27}{12} = \\frac{9}{4}$$",
     "createdAt": "2026-11-14T09:15:00.000Z",
-    "updatedAt": "2026-11-14T09:15:00.000Z"
+    "updatedAt": "2026-11-23T00:30:00.000Z"
   },
   {
     "id": "sample-3",
@@ -127,6 +127,9 @@ class MathArchiveApp {
     }
     localStorage.setItem(THEME_STORAGE_KEY, theme);
     this.refreshIcons();
+    document.querySelectorAll('.math-graph-widget').forEach(el => {
+      if (typeof el._redrawGraph === 'function') el._redrawGraph();
+    });
   }
 
   toggleTheme() {
@@ -537,6 +540,14 @@ class MathArchiveApp {
 
     let processed = text.replace(/\r\n?/g, '\n');
 
+    // 0. 関数グラフ描画ブロック (```graph ... ``` または ```plot ... ```) を抽出
+    const graphTokens = [];
+    processed = processed.replace(/```(?:graph|plot)[ \t]*\n([\s\S]*?)```/gi, (_, spec) => {
+      const id = graphTokens.length;
+      graphTokens.push(spec);
+      return `\n\n%%GRAPHTOKEN${id}%%\n\n`;
+    });
+
     // 1. コードブロック (`...`, ```...```) を一時退避
     const codeTokens = [];
     const addCodeToken = (code) => {
@@ -605,7 +616,988 @@ class MathArchiveApp {
       return token.display ? `$$${this.escapeHtml(normalized)}$$` : `$${this.escapeHtml(normalized)}$`;
     });
 
+    // 5. グラフトークンをコンテナ要素に置換
+    html = html.replace(/(?:<p>\s*)?%%GRAPHTOKEN(\d+)%%(?:\s*<\/p>)?/g, (_, idxStr) => {
+      return `<div class="math-graph-widget" data-graph-idx="${idxStr}"></div>`;
+    });
+
     targetEl.innerHTML = html;
+
+    // 6. インタラクティブグラフウィジェットをマウント
+    if (graphTokens.length > 0 && !targetEl.classList.contains('index-card-preview')) {
+      targetEl.querySelectorAll('.math-graph-widget[data-graph-idx]').forEach(widgetEl => {
+        const idx = Number(widgetEl.getAttribute('data-graph-idx'));
+        if (graphTokens[idx] !== undefined) {
+          this.mountGraphWidget(widgetEl, graphTokens[idx]);
+        }
+      });
+    }
+  }
+
+  // --------------------------------------------------------
+  // インタラクティブ関数グラフ描画エンジン (Canvas / 数式パーサー)
+  // --------------------------------------------------------
+  compileMathExpr(rawExpr, varName = 'x') {
+    if (!rawExpr || !String(rawExpr).trim()) return () => NaN;
+    let s = String(rawExpr).trim().replace(/^\$+|\$+$/g, '').trim();
+
+    // 全角記号・LaTeX構文の正規化
+    s = s.replace(/＋/g, '+')
+         .replace(/[－−–—]/g, '-')
+         .replace(/[＊×\\times\\cdot]/g, '*')
+         .replace(/[／÷\\div]/g, '/')
+         .replace(/＾/g, '^')
+         .replace(/（/g, '(')
+         .replace(/）/g, ')')
+         .replace(/｜/g, '|')
+         .replace(/\\left|\\right/g, '');
+
+    // \frac{a}{b}, \dfrac{a}{b}, \sqrt{a} の展開
+    for (let i = 0; i < 4; i++) {
+      s = s.replace(/\\d?frac\s*\{([^{}]*)\}\s*\{([^{}]*)\}/g, '(($1)/($2))');
+      s = s.replace(/\\sqrt\s*\{([^{}]*)\}/g, 'sqrt($1)');
+    }
+    s = s.replace(/\{/g, '(').replace(/\}/g, ')');
+
+    // |expr| を abs(expr) に変換
+    for (let i = 0; i < 3; i++) {
+      const next = s.replace(/\|([^|]+)\|/g, 'abs($1)');
+      if (next === s) break;
+      s = next;
+    }
+
+    // \sin, \cos, \pi 等のバックスラッシュを除去
+    s = s.replace(/\\([a-zA-Z]+)/g, '$1');
+
+    const FUNC_MAP = {
+      sin: Math.sin, cos: Math.cos, tan: Math.tan,
+      asin: Math.asin, acos: Math.acos, atan: Math.atan,
+      arcsin: Math.asin, arccos: Math.acos, arctan: Math.atan,
+      sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
+      sec: (v) => 1 / Math.cos(v), csc: (v) => 1 / Math.sin(v), cot: (v) => 1 / Math.tan(v),
+      log10: Math.log10, log2: Math.log2, log: Math.log, ln: Math.log,
+      exp: Math.exp, sqrt: Math.sqrt, cbrt: Math.cbrt,
+      abs: Math.abs, floor: Math.floor, ceil: Math.ceil, round: Math.round, sign: Math.sign
+    };
+    const FUNC_NAMES = Object.keys(FUNC_MAP).sort((a, b) => b.length - a.length);
+
+    // トークナイザー
+    const rawTokens = [];
+    let i = 0;
+    while (i < s.length) {
+      const ch = s[i];
+      if (/\s/.test(ch)) { i++; continue; }
+      if (/\d/.test(ch) || (ch === '.' && /\d/.test(s[i + 1] || ''))) {
+        let numStr = '';
+        while (i < s.length && /[\d.]/.test(s[i])) { numStr += s[i++]; }
+        rawTokens.push({ type: 'NUMBER', value: parseFloat(numStr) });
+        continue;
+      }
+      if ('+-*/^'.includes(ch)) {
+        rawTokens.push({ type: 'OP', value: ch });
+        i++;
+        continue;
+      }
+      if (ch === '(') { rawTokens.push({ type: 'LPAREN' }); i++; continue; }
+      if (ch === ')') { rawTokens.push({ type: 'RPAREN' }); i++; continue; }
+      if (ch === 'π') { rawTokens.push({ type: 'CONST', value: Math.PI }); i++; continue; }
+
+      if (/[a-zA-Z]/.test(ch)) {
+        const rest = s.slice(i);
+        let matched = false;
+        for (const fn of FUNC_NAMES) {
+          if (rest.toLowerCase().startsWith(fn)) {
+            const after = rest[fn.length] || '';
+            if (!/[a-zA-Z]/.test(after) || after.toLowerCase() === varName.toLowerCase()) {
+              rawTokens.push({ type: 'FUNC', fn: FUNC_MAP[fn], name: fn });
+              i += fn.length;
+              matched = true;
+              break;
+            }
+          }
+        }
+        if (matched) continue;
+
+        if (rest.toLowerCase().startsWith('pi')) {
+          rawTokens.push({ type: 'CONST', value: Math.PI });
+          i += 2;
+          continue;
+        }
+        if (ch.toLowerCase() === varName.toLowerCase()) {
+          rawTokens.push({ type: 'VAR' });
+          i++;
+          continue;
+        }
+        if (ch === 'e' || ch === 'E') {
+          rawTokens.push({ type: 'CONST', value: Math.E });
+          i++;
+          continue;
+        }
+        // 未知の文字は変数として扱うかスキップ
+        rawTokens.push({ type: 'VAR' });
+        i++;
+        continue;
+      }
+      i++;
+    }
+
+    // 暗黙の乗算 (*) を補完 (例: 2x -> 2*x, (x+1)(x-1) -> (x+1)*(x-1), 2sin(x) -> 2*sin(x))
+    const tokens = [];
+    for (let k = 0; k < rawTokens.length; k++) {
+      const curr = rawTokens[k];
+      if (k > 0) {
+        const prev = rawTokens[k - 1];
+        const prevIsVal = prev.type === 'NUMBER' || prev.type === 'CONST' || prev.type === 'VAR' || prev.type === 'RPAREN';
+        const currIsVal = curr.type === 'NUMBER' || curr.type === 'CONST' || curr.type === 'VAR' || curr.type === 'FUNC' || curr.type === 'LPAREN';
+        if (prevIsVal && currIsVal) {
+          tokens.push({ type: 'OP', value: '*' });
+        }
+      }
+      tokens.push(curr);
+    }
+
+    // 再帰下降パーサー (-x^2 = -(x^2), e^-x = e^(-x) の数学的優先順位を厳密に保持)
+    let pos = 0;
+    const peek = () => tokens[pos];
+    const consume = () => tokens[pos++];
+
+    const parseExpr = () => {
+      let left = parseTerm();
+      while (peek() && peek().type === 'OP' && (peek().value === '+' || peek().value === '-')) {
+        const op = consume().value;
+        const right = parseTerm();
+        const prevLeft = left;
+        left = op === '+' ? (v) => prevLeft(v) + right(v) : (v) => prevLeft(v) - right(v);
+      }
+      return left;
+    };
+
+    const parseTerm = () => {
+      let left = parseUnary();
+      while (peek() && peek().type === 'OP' && (peek().value === '*' || peek().value === '/')) {
+        const op = consume().value;
+        const right = parseUnary();
+        const prevLeft = left;
+        left = op === '*' ? (v) => prevLeft(v) * right(v) : (v) => prevLeft(v) / right(v);
+      }
+      return left;
+    };
+
+    const parseUnary = () => {
+      if (peek() && peek().type === 'OP' && (peek().value === '+' || peek().value === '-')) {
+        const op = consume().value;
+        const operand = parseUnary();
+        return op === '-' ? (v) => -operand(v) : operand;
+      }
+      return parsePower();
+    };
+
+    const parsePower = () => {
+      const base = parsePrimary();
+      if (peek() && peek().type === 'OP' && peek().value === '^') {
+        consume();
+        const exp = parseUnary(); // 右結合かつ指数部の単項マイナス (e^-x) を許容
+        return (v) => Math.pow(base(v), exp(v));
+      }
+      return base;
+    };
+
+    const parsePrimary = () => {
+      const t = peek();
+      if (!t) return () => NaN;
+      if (t.type === 'NUMBER') { consume(); const val = t.value; return () => val; }
+      if (t.type === 'CONST') { consume(); const val = t.value; return () => val; }
+      if (t.type === 'VAR') { consume(); return (v) => v; }
+      if (t.type === 'FUNC') {
+        consume();
+        const fn = t.fn;
+        if (peek() && peek().type === 'LPAREN') {
+          consume();
+          const arg = parseExpr();
+          if (peek() && peek().type === 'RPAREN') consume();
+          return (v) => fn(arg(v));
+        }
+        const arg = parseUnary();
+        return (v) => fn(arg(v));
+      }
+      if (t.type === 'LPAREN') {
+        consume();
+        const inner = parseExpr();
+        if (peek() && peek().type === 'RPAREN') consume();
+        return inner;
+      }
+      consume();
+      return () => NaN;
+    };
+
+    try {
+      const ast = parseExpr();
+      return (v) => {
+        try {
+          const res = ast(v);
+          return typeof res === 'number' ? res : NaN;
+        } catch (_) {
+          return NaN;
+        }
+      };
+    } catch (_) {
+      return () => NaN;
+    }
+  }
+
+  evalMathConst(exprStr, fallback = 0) {
+    if (exprStr === undefined || exprStr === null) return fallback;
+    const val = this.compileMathExpr(String(exprStr), 'x')(0);
+    return Number.isFinite(val) ? val : fallback;
+  }
+
+  parseBracketPair(str, fallback = [-5, 5]) {
+    const m = String(str).match(/\[([^\],]+),([^\]]+)\]/);
+    if (!m) return fallback;
+    const a = this.evalMathConst(m[1], fallback[0]);
+    const b = this.evalMathConst(m[2], fallback[1]);
+    return a < b ? [a, b] : fallback;
+  }
+
+  parseGraphSpec(specText) {
+    const palette = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
+    let colorIdx = 0;
+    const nextColor = () => palette[(colorIdx++) % palette.length];
+
+    const config = {
+      title: '関数グラフ',
+      domain: [-5, 5],
+      range: [-5, 5],
+      grid: true,
+      shades: [],
+      curves: [],
+      points: []
+    };
+
+    const lines = String(specText || '').split('\n');
+    for (const rawLine of lines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith('#') || line.startsWith('//')) continue;
+
+      const parts = line.split('|').map(p => p.trim());
+      const main = parts[0];
+      const opts = {};
+
+      for (let i = 1; i < parts.length; i++) {
+        const opt = parts[i];
+        const lower = opt.toLowerCase();
+        if (lower === 'dashed') { opts.dashed = true; continue; }
+        if (lower === 'dotted') { opts.dotted = true; continue; }
+        if (lower === 'guide') { opts.guide = true; continue; }
+        const kv = opt.match(/^([a-zA-Z_]+)\s*:\s*(.+)$/);
+        if (kv) {
+          const k = kv[1].toLowerCase();
+          const v = kv[2].trim();
+          opts[k] = v;
+        }
+      }
+
+      // トップレベル設定行
+      const settingMatch = main.match(/^([a-zA-Z_]+)\s*:\s*(.+)$/);
+      if (settingMatch) {
+        const key = settingMatch[1].toLowerCase();
+        const val = settingMatch[2].trim();
+
+        if (key === 'title') {
+          config.title = val;
+          continue;
+        }
+        if (key === 'domain' || key === 'xrange' || key === 'x') {
+          config.domain = this.parseBracketPair(val, config.domain);
+          continue;
+        }
+        if (key === 'range' || key === 'yrange' || key === 'y') {
+          config.range = this.parseBracketPair(val, config.range);
+          continue;
+        }
+        if (key === 'grid') {
+          config.grid = val.toLowerCase() !== 'false';
+          continue;
+        }
+
+        // 1. 面積・定積分塗りつぶし (shade: f(x), g(x) | from: a | to: b)
+        if (key === 'shade' || key === 'area') {
+          const exprs = val.split(',').map(e => e.trim()).filter(Boolean);
+          const fn1 = this.compileMathExpr(exprs[0].replace(/^[yY]\s*=\s*/, ''), 'x');
+          const fn2 = exprs[1] ? this.compileMathExpr(exprs[1].replace(/^[yY]\s*=\s*/, ''), 'x') : () => 0;
+          let [fromX, toX] = opts.domain || opts.x
+            ? this.parseBracketPair(opts.domain || opts.x, config.domain)
+            : [...config.domain];
+          if (opts.from !== undefined) fromX = this.evalMathConst(opts.from, fromX);
+          if (opts.to !== undefined) toX = this.evalMathConst(opts.to, toX);
+          config.shades.push({
+            fn1,
+            fn2,
+            from: Math.min(fromX, toX),
+            to: Math.max(fromX, toX),
+            color: opts.color || '#3b82f6',
+            label: opts.label || ''
+          });
+          continue;
+        }
+
+        // 2. 点プロット (point: (x, y) | label: P | guide)
+        if (key === 'point' || key === 'pt') {
+          const pm = val.match(/\(\s*([^,]+)\s*,\s*([^)]+)\s*\)/);
+          if (pm) {
+            const px = this.evalMathConst(pm[1], 0);
+            const py = this.evalMathConst(pm[2], 0);
+            config.points.push({
+              x: px,
+              y: py,
+              color: opts.color || '#ef4444',
+              label: opts.label !== undefined ? opts.label : `(${pm[1].trim()}, ${pm[2].trim()})`,
+              guide: opts.guide !== undefined ? opts.guide !== 'false' : true
+            });
+          }
+          continue;
+        }
+
+        // 3. 接線の自動計算・描画 (tangent: f(x) | at: a)
+        if (key === 'tangent') {
+          const cleanExpr = val.replace(/^[yY]\s*=\s*/, '');
+          const fn = this.compileMathExpr(cleanExpr, 'x');
+          const a = this.evalMathConst(opts.at ?? opts.x ?? 0, 0);
+          const fa = fn(a);
+          const h = 1e-5;
+          const slope = (fn(a + h) - fn(a - h)) / (2 * h);
+          if (Number.isFinite(fa) && Number.isFinite(slope)) {
+            const color = opts.color || nextColor();
+            config.curves.push({
+              type: 'y',
+              fn: (x) => slope * (x - a) + fa,
+              color,
+              dashed: Boolean(opts.dashed),
+              dotted: Boolean(opts.dotted),
+              label: opts.label || `x=${a} における接線`,
+              subDomain: opts.domain ? this.parseBracketPair(opts.domain, null) : null
+            });
+            config.points.push({
+              x: a,
+              y: fa,
+              color,
+              label: `(${Number(a.toFixed(2))}, ${Number(fa.toFixed(2))})`,
+              guide: true
+            });
+          }
+          continue;
+        }
+
+        // 4. 媒介変数曲線 (param: (x(t), y(t)) | t: [0, 2*pi])
+        if (key === 'param' || key === 'parametric') {
+          const pm = val.match(/\(\s*([^,]+)\s*,\s*([^)]+)\s*\)/);
+          if (pm) {
+            const fx = this.compileMathExpr(pm[1], 't');
+            const fy = this.compileMathExpr(pm[2], 't');
+            const tRange = this.parseBracketPair(opts.t || opts.domain || '[0, 2*pi]', [0, 2 * Math.PI]);
+            config.curves.push({
+              type: 'param',
+              fx,
+              fy,
+              tMin: tRange[0],
+              tMax: tRange[1],
+              color: opts.color || nextColor(),
+              dashed: Boolean(opts.dashed),
+              dotted: Boolean(opts.dotted),
+              label: opts.label || `(${pm[1].trim()}, ${pm[2].trim()})`
+            });
+          }
+          continue;
+        }
+
+        // 5. 円 (circle: (cx, cy), r)
+        if (key === 'circle') {
+          const cm = val.match(/\(\s*([^,]+)\s*,\s*([^)]+)\s*\)\s*,\s*(?:r\s*=\s*)?(.+)/);
+          if (cm) {
+            const cx = this.evalMathConst(cm[1], 0);
+            const cy = this.evalMathConst(cm[2], 0);
+            const r = Math.abs(this.evalMathConst(cm[3], 1));
+            config.curves.push({
+              type: 'param',
+              fx: (t) => cx + r * Math.cos(t),
+              fy: (t) => cy + r * Math.sin(t),
+              tMin: 0,
+              tMax: 2 * Math.PI,
+              color: opts.color || nextColor(),
+              dashed: Boolean(opts.dashed),
+              dotted: Boolean(opts.dotted),
+              label: opts.label || `円 (中心(${cx},${cy}), r=${Number(r.toFixed(2))})`
+            });
+          }
+          continue;
+        }
+      }
+
+      // 6. x = g(y) または垂直線 x = c
+      if (/^[xX]\s*=/.test(main)) {
+        const rhs = main.replace(/^[xX]\s*=\s*/, '').trim();
+        const fnY = this.compileMathExpr(rhs, 'y');
+        config.curves.push({
+          type: 'x',
+          fn: fnY,
+          rawExpr: main,
+          color: opts.color || nextColor(),
+          dashed: Boolean(opts.dashed),
+          dotted: Boolean(opts.dotted),
+          label: opts.label !== undefined ? opts.label : main
+        });
+        continue;
+      }
+
+      // 7. 陽関数 y = f(x), f(x) = ..., または式のみ
+      let exprStr = main;
+      if (/^(?:[yY]|[a-zA-Z]\s*\(\s*x\s*\))\s*=/.test(main)) {
+        exprStr = main.replace(/^(?:[yY]|[a-zA-Z]\s*\(\s*x\s*\))\s*=\s*/, '').trim();
+      }
+      const fnX = this.compileMathExpr(exprStr, 'x');
+      config.curves.push({
+        type: 'y',
+        fn: fnX,
+        rawExpr: exprStr,
+        color: opts.color || nextColor(),
+        dashed: Boolean(opts.dashed),
+        dotted: Boolean(opts.dotted),
+        label: opts.label !== undefined ? opts.label : (main.includes('=') ? main : `y = ${main}`),
+        subDomain: (opts.domain || opts.x) ? this.parseBracketPair(opts.domain || opts.x, null) : null
+      });
+    }
+
+    return config;
+  }
+
+  niceGridStep(span) {
+    if (!Number.isFinite(span) || span <= 0) return 1;
+    const raw = span / 8;
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const norm = raw / mag;
+    if (norm < 1.5) return 1 * mag;
+    if (norm < 3.5) return 2 * mag;
+    if (norm < 7.5) return 5 * mag;
+    return 10 * mag;
+  }
+
+  formatTickNumber(val, step) {
+    if (Math.abs(val) < 1e-10) return '0';
+    const decimals = step < 0.01 ? 3 : step < 0.1 ? 2 : step < 1 ? 1 : 0;
+    return Number(val.toFixed(decimals)).toString();
+  }
+
+  mountGraphWidget(widgetEl, specText) {
+    const spec = this.parseGraphSpec(specText);
+    const initView = {
+      xmin: spec.domain[0],
+      xmax: spec.domain[1],
+      ymin: spec.range[0],
+      ymax: spec.range[1]
+    };
+    const view = { ...initView };
+    let hoverState = null;
+
+    widgetEl.innerHTML = `
+      <div class="graph-toolbar">
+        <div class="graph-title">📈 ${this.escapeHtml(spec.title)}</div>
+        <div class="graph-controls">
+          <span class="graph-coords-badge">(x, y) = (-, -)</span>
+          <button type="button" class="graph-ctrl-btn" data-act="zoom-in" title="拡大">＋</button>
+          <button type="button" class="graph-ctrl-btn" data-act="zoom-out" title="縮小">－</button>
+          <button type="button" class="graph-ctrl-btn" data-act="reset" title="表示範囲をリセット">リセット</button>
+          <button type="button" class="graph-ctrl-btn" data-act="download" title="グラフをPNG画像で保存">PNG保存</button>
+        </div>
+      </div>
+      <div class="graph-canvas-wrap">
+        <canvas class="graph-canvas"></canvas>
+      </div>
+      <div class="graph-legend"></div>
+    `;
+
+    const canvas = widgetEl.querySelector('.graph-canvas');
+    const coordsBadge = widgetEl.querySelector('.graph-coords-badge');
+    const legendEl = widgetEl.querySelector('.graph-legend');
+
+    // 凡例の生成
+    const legendItems = [];
+    spec.curves.forEach(c => {
+      if (c.label) {
+        legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch" style="background:${this.escapeHtml(c.color)}"></span><span>${this.escapeHtml(c.label)}</span></span>`);
+      }
+    });
+    spec.shades.forEach(sh => {
+      const lbl = sh.label || `面積区間 [${Number(sh.from.toFixed(2))}, ${Number(sh.to.toFixed(2))}]`;
+      legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch swatch-shade" style="background:${this.escapeHtml(sh.color)}"></span><span>${this.escapeHtml(lbl)}</span></span>`);
+    });
+    spec.points.forEach(pt => {
+      if (pt.label) {
+        legendItems.push(`<span class="graph-legend-item"><span class="graph-legend-swatch swatch-point" style="background:${this.escapeHtml(pt.color)}"></span><span>${this.escapeHtml(pt.label)}</span></span>`);
+      }
+    });
+    legendEl.innerHTML = legendItems.join('');
+
+    const draw = () => {
+      const rect = canvas.getBoundingClientRect();
+      const w = Math.max(rect.width || 560, 260);
+      const h = Math.max(rect.height || 340, 200);
+      const dpr = window.devicePixelRatio || 1;
+
+      if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+        canvas.width = Math.round(w * dpr);
+        canvas.height = Math.round(h * dpr);
+      }
+
+      const ctx = canvas.getContext('2d');
+      ctx.save();
+      ctx.scale(dpr, dpr);
+
+      const isDark = document.body.classList.contains('theme-dark');
+      const bgCol = isDark ? '#131b2e' : '#ffffff';
+      const gridCol = isDark ? 'rgba(148, 163, 184, 0.14)' : 'rgba(148, 163, 184, 0.24)';
+      const subGridCol = isDark ? 'rgba(148, 163, 184, 0.06)' : 'rgba(148, 163, 184, 0.10)';
+      const axisCol = isDark ? '#94a3b8' : '#475569';
+      const textCol = isDark ? '#cbd5e1' : '#334155';
+
+      // 背景クリア
+      ctx.fillStyle = bgCol;
+      ctx.fillRect(0, 0, w, h);
+
+      const toPxX = (x) => ((x - view.xmin) / (view.xmax - view.xmin)) * w;
+      const toPxY = (y) => h - ((y - view.ymin) / (view.ymax - view.ymin)) * h;
+      const toMathX = (px) => view.xmin + (px / w) * (view.xmax - view.xmin);
+      const toMathY = (py) => view.ymin + ((h - py) / h) * (view.ymax - view.ymin);
+
+      const xStep = this.niceGridStep(view.xmax - view.xmin);
+      const yStep = this.niceGridStep(view.ymax - view.ymin);
+
+      // 1. グリッド線
+      if (spec.grid) {
+        // サブグリッド
+        ctx.strokeStyle = subGridCol;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        const xSub = xStep / 2;
+        for (let gx = Math.ceil(view.xmin / xSub) * xSub; gx <= view.xmax; gx += xSub) {
+          const px = toPxX(gx);
+          ctx.moveTo(px, 0);
+          ctx.lineTo(px, h);
+        }
+        const ySub = yStep / 2;
+        for (let gy = Math.ceil(view.ymin / ySub) * ySub; gy <= view.ymax; gy += ySub) {
+          const py = toPxY(gy);
+          ctx.moveTo(0, py);
+          ctx.lineTo(w, py);
+        }
+        ctx.stroke();
+
+        // メイングリッド
+        ctx.strokeStyle = gridCol;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let gx = Math.ceil(view.xmin / xStep) * xStep; gx <= view.xmax; gx += xStep) {
+          const px = toPxX(gx);
+          ctx.moveTo(px, 0);
+          ctx.lineTo(px, h);
+        }
+        for (let gy = Math.ceil(view.ymin / yStep) * yStep; gy <= view.ymax; gy += yStep) {
+          const py = toPxY(gy);
+          ctx.moveTo(0, py);
+          ctx.lineTo(w, py);
+        }
+        ctx.stroke();
+      }
+
+      // 2. 面積・定積分塗りつぶし (半透明カラー + 教科書風の斜線ハッチング)
+      spec.shades.forEach(sh => {
+        const x0 = Math.max(sh.from, view.xmin);
+        const x1 = Math.min(sh.to, view.xmax);
+        if (x0 >= x1) return;
+
+        const steps = 220;
+        const dx = (x1 - x0) / steps;
+        const topPts = [];
+        const botPts = [];
+
+        for (let k = 0; k <= steps; k++) {
+          const x = x0 + k * dx;
+          const y1 = sh.fn1(x);
+          const y2 = sh.fn2(x);
+          if (Number.isFinite(y1) && Number.isFinite(y2)) {
+            topPts.push({ px: toPxX(x), py: toPxY(y1) });
+            botPts.push({ px: toPxX(x), py: toPxY(y2) });
+          }
+        }
+        if (topPts.length < 2) return;
+
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(topPts[0].px, topPts[0].py);
+        for (let k = 1; k < topPts.length; k++) ctx.lineTo(topPts[k].px, topPts[k].py);
+        for (let k = botPts.length - 1; k >= 0; k--) ctx.lineTo(botPts[k].px, botPts[k].py);
+        ctx.closePath();
+
+        ctx.fillStyle = sh.color;
+        ctx.globalAlpha = isDark ? 0.22 : 0.18;
+        ctx.fill();
+
+        // 斜線ハッチング
+        ctx.clip();
+        ctx.strokeStyle = sh.color;
+        ctx.globalAlpha = isDark ? 0.45 : 0.35;
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        const spacing = 10;
+        for (let d = -h; d < w + h; d += spacing) {
+          ctx.moveTo(d, 0);
+          ctx.lineTo(d - h, h);
+        }
+        ctx.stroke();
+        ctx.restore();
+      });
+
+      // 3. 座標軸 (x軸・y軸・矢印・目盛り・原点O)
+      const axisX0 = Math.min(Math.max(toPxX(0), 24), w - 24);
+      const axisY0 = Math.min(Math.max(toPxY(0), 20), h - 24);
+
+      ctx.strokeStyle = axisCol;
+      ctx.fillStyle = axisCol;
+      ctx.lineWidth = 1.6;
+
+      // x軸
+      ctx.beginPath();
+      ctx.moveTo(0, axisY0);
+      ctx.lineTo(w - 2, axisY0);
+      ctx.stroke();
+      // x軸矢印
+      ctx.beginPath();
+      ctx.moveTo(w - 1, axisY0);
+      ctx.lineTo(w - 9, axisY0 - 4);
+      ctx.lineTo(w - 9, axisY0 + 4);
+      ctx.closePath();
+      ctx.fill();
+
+      // y軸
+      ctx.beginPath();
+      ctx.moveTo(axisX0, h);
+      ctx.lineTo(axisX0, 2);
+      ctx.stroke();
+      // y軸矢印
+      ctx.beginPath();
+      ctx.moveTo(axisX0, 1);
+      ctx.lineTo(axisX0 - 4, 9);
+      ctx.lineTo(axisX0 + 4, 9);
+      ctx.closePath();
+      ctx.fill();
+
+      // 目盛り数値と軸ラベル
+      ctx.fillStyle = textCol;
+      ctx.font = '11px "JetBrains Mono", "Noto Sans JP", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      for (let gx = Math.ceil(view.xmin / xStep) * xStep; gx <= view.xmax; gx += xStep) {
+        if (Math.abs(gx) < xStep * 1e-4) continue;
+        const px = toPxX(gx);
+        if (px < 18 || px > w - 22) continue;
+        ctx.fillText(this.formatTickNumber(gx, xStep), px, Math.min(axisY0 + 5, h - 16));
+      }
+
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      for (let gy = Math.ceil(view.ymin / yStep) * yStep; gy <= view.ymax; gy += yStep) {
+        if (Math.abs(gy) < yStep * 1e-4) continue;
+        const py = toPxY(gy);
+        if (py < 16 || py > h - 16) continue;
+        ctx.fillText(this.formatTickNumber(gy, yStep), Math.max(axisX0 - 6, 26), py);
+      }
+
+      // 原点 O と x, y ラベル
+      ctx.font = 'italic 600 13px "Inter", serif';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'top';
+      if (toPxX(0) >= 12 && toPxX(0) <= w - 12 && toPxY(0) >= 12 && toPxY(0) <= h - 12) {
+        ctx.fillText('O', axisX0 - 5, axisY0 + 4);
+      }
+      ctx.fillText('x', w - 6, axisY0 - 18);
+      ctx.textAlign = 'left';
+      ctx.fillText('y', axisX0 + 8, 6);
+
+      // 4. 曲線・関数のプロット
+      const samples = Math.min(Math.max(Math.round(w * 1.5), 600), 1200);
+      const ySpan = view.ymax - view.ymin;
+
+      spec.curves.forEach(curve => {
+        ctx.save();
+        ctx.strokeStyle = curve.color;
+        ctx.lineWidth = 2.4;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        if (curve.dashed) ctx.setLineDash([7, 5]);
+        else if (curve.dotted) ctx.setLineDash([2.5, 4]);
+
+        ctx.beginPath();
+        let drawing = false;
+        let prevY = null;
+
+        if (curve.type === 'y') {
+          const cMin = curve.subDomain ? Math.max(view.xmin, curve.subDomain[0]) : view.xmin;
+          const cMax = curve.subDomain ? Math.min(view.xmax, curve.subDomain[1]) : view.xmax;
+          if (cMin < cMax) {
+            for (let k = 0; k <= samples; k++) {
+              const x = cMin + (k / samples) * (cMax - cMin);
+              const y = curve.fn(x);
+              if (!Number.isFinite(y) || y < view.ymin - ySpan * 4 || y > view.ymax + ySpan * 4) {
+                drawing = false;
+                prevY = null;
+                continue;
+              }
+              // 漸近線（不連続ジャンプ）の検出
+              if (prevY !== null && Math.abs(y - prevY) > ySpan * 1.6) {
+                drawing = false;
+              }
+              const px = toPxX(x);
+              const py = toPxY(y);
+              if (!drawing) {
+                ctx.moveTo(px, py);
+                drawing = true;
+              } else {
+                ctx.lineTo(px, py);
+              }
+              prevY = y;
+            }
+          }
+        } else if (curve.type === 'x') {
+          for (let k = 0; k <= samples; k++) {
+            const y = view.ymin + (k / samples) * (view.ymax - view.ymin);
+            const x = curve.fn(y);
+            if (!Number.isFinite(x)) { drawing = false; continue; }
+            const px = toPxX(x);
+            const py = toPxY(y);
+            if (!drawing) { ctx.moveTo(px, py); drawing = true; }
+            else { ctx.lineTo(px, py); }
+          }
+        } else if (curve.type === 'param') {
+          for (let k = 0; k <= samples; k++) {
+            const t = curve.tMin + (k / samples) * (curve.tMax - curve.tMin);
+            const x = curve.fx(t);
+            const y = curve.fy(t);
+            if (!Number.isFinite(x) || !Number.isFinite(y)) { drawing = false; continue; }
+            const px = toPxX(x);
+            const py = toPxY(y);
+            if (!drawing) { ctx.moveTo(px, py); drawing = true; }
+            else { ctx.lineTo(px, py); }
+          }
+        }
+        ctx.stroke();
+        ctx.restore();
+      });
+
+      // 5. 特徴点 (極大・極小・交点・座標ガイド点線)
+      spec.points.forEach(pt => {
+        const px = toPxX(pt.x);
+        const py = toPxY(pt.y);
+        if (px < -20 || px > w + 20 || py < -20 || py > h + 20) return;
+
+        // 座標軸への点線ガイド
+        if (pt.guide) {
+          ctx.save();
+          ctx.strokeStyle = pt.color;
+          ctx.globalAlpha = 0.45;
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([4, 4]);
+          ctx.beginPath();
+          if (Math.abs(pt.y) > 1e-6) {
+            ctx.moveTo(px, py);
+            ctx.lineTo(px, toPxY(0));
+          }
+          if (Math.abs(pt.x) > 1e-6) {
+            ctx.moveTo(px, py);
+            ctx.lineTo(toPxX(0), py);
+          }
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        // 点マーカー
+        ctx.save();
+        ctx.fillStyle = bgCol;
+        ctx.beginPath();
+        ctx.arc(px, py, 6, 0, 2 * Math.PI);
+        ctx.fill();
+
+        ctx.fillStyle = pt.color;
+        ctx.beginPath();
+        ctx.arc(px, py, 4.2, 0, 2 * Math.PI);
+        ctx.fill();
+
+        // 点ラベル
+        if (pt.label) {
+          ctx.font = '600 11.5px "Noto Sans JP", "Inter", sans-serif';
+          const textW = ctx.measureText(pt.label).width;
+          const offsetY = py < 36 ? 15 : -13;
+          const boxX = Math.min(Math.max(px - textW / 2 - 5, 4), w - textW - 14);
+          const boxY = py + offsetY - 9;
+
+          ctx.fillStyle = isDark ? 'rgba(19, 27, 46, 0.88)' : 'rgba(255, 255, 255, 0.90)';
+          ctx.strokeStyle = pt.color;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(boxX, boxY, textW + 10, 18, 4);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = textCol;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(pt.label, boxX + 5, boxY + 9);
+        }
+        ctx.restore();
+      });
+
+      // 6. マウスホバー時のクロスヘア＆曲線上のスナップ点表示
+      if (hoverState) {
+        const hx = toMathX(hoverState.px);
+        const hy = toMathY(hoverState.py);
+
+        ctx.save();
+        ctx.strokeStyle = isDark ? 'rgba(148, 163, 184, 0.35)' : 'rgba(100, 116, 139, 0.35)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.moveTo(hoverState.px, 0);
+        ctx.lineTo(hoverState.px, h);
+        ctx.moveTo(0, hoverState.py);
+        ctx.lineTo(w, hoverState.py);
+        ctx.stroke();
+
+        // 最も近い y = f(x) 曲線上の点をハイライト
+        let bestCurve = null;
+        let bestY = null;
+        let bestDist = 28;
+        spec.curves.forEach(c => {
+          if (c.type === 'y') {
+            if (c.subDomain && (hx < c.subDomain[0] || hx > c.subDomain[1])) return;
+            const cy = c.fn(hx);
+            if (Number.isFinite(cy)) {
+              const cpy = toPxY(cy);
+              const dist = Math.abs(cpy - hoverState.py);
+              if (dist < bestDist) {
+                bestDist = dist;
+                bestCurve = c;
+                bestY = cy;
+              }
+            }
+          }
+        });
+
+        if (bestCurve && bestY !== null) {
+          const snapPy = toPxY(bestY);
+          ctx.fillStyle = bestCurve.color;
+          ctx.beginPath();
+          ctx.arc(hoverState.px, snapPy, 5, 0, 2 * Math.PI);
+          ctx.fill();
+          coordsBadge.textContent = `(x, y) = (${hx.toFixed(2)}, ${bestY.toFixed(2)})`;
+        } else {
+          coordsBadge.textContent = `(x, y) = (${hx.toFixed(2)}, ${hy.toFixed(2)})`;
+        }
+        ctx.restore();
+      }
+
+      ctx.restore();
+    };
+
+    widgetEl._redrawGraph = draw;
+
+    // ドラッグ移動 (Pan) & ホバー座標追跡
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0, xmin: 0, xmax: 0, ymin: 0, ymax: 0 };
+
+    canvas.addEventListener('pointerdown', (e) => {
+      isDragging = true;
+      canvas.setPointerCapture(e.pointerId);
+      dragStart = {
+        x: e.clientX,
+        y: e.clientY,
+        xmin: view.xmin,
+        xmax: view.xmax,
+        ymin: view.ymin,
+        ymax: view.ymax
+      };
+    });
+
+    canvas.addEventListener('pointermove', (e) => {
+      const rect = canvas.getBoundingClientRect();
+      const px = e.clientX - rect.left;
+      const py = e.clientY - rect.top;
+
+      if (isDragging) {
+        const dx = e.clientX - dragStart.x;
+        const dy = e.clientY - dragStart.y;
+        const xSpan = dragStart.xmax - dragStart.xmin;
+        const ySpan = dragStart.ymax - dragStart.ymin;
+        view.xmin = dragStart.xmin - (dx / rect.width) * xSpan;
+        view.xmax = dragStart.xmax - (dx / rect.width) * xSpan;
+        view.ymin = dragStart.ymin + (dy / rect.height) * ySpan;
+        view.ymax = dragStart.ymax + (dy / rect.height) * ySpan;
+      }
+      hoverState = { px, py };
+      draw();
+    });
+
+    const endDrag = () => { isDragging = false; };
+    canvas.addEventListener('pointerup', endDrag);
+    canvas.addEventListener('pointercancel', endDrag);
+    canvas.addEventListener('pointerleave', () => {
+      isDragging = false;
+      hoverState = null;
+      coordsBadge.textContent = '(x, y) = (-, -)';
+      draw();
+    });
+
+    // ホイールでのズーム
+    const zoomBy = (factor) => {
+      const xCenter = (view.xmin + view.xmax) / 2;
+      const yCenter = (view.ymin + view.ymax) / 2;
+      const xHalf = ((view.xmax - view.xmin) / 2) * factor;
+      const yHalf = ((view.ymax - view.ymin) / 2) * factor;
+      if (xHalf > 1e-4 && xHalf < 1e5) {
+        view.xmin = xCenter - xHalf;
+        view.xmax = xCenter + xHalf;
+        view.ymin = yCenter - yHalf;
+        view.ymax = yCenter + yHalf;
+        draw();
+      }
+    };
+
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      zoomBy(e.deltaY > 0 ? 1.15 : 0.87);
+    }, { passive: false });
+
+    // ツールバーボタン操作
+    widgetEl.querySelectorAll('.graph-ctrl-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const act = btn.getAttribute('data-act');
+        if (act === 'zoom-in') zoomBy(0.8);
+        else if (act === 'zoom-out') zoomBy(1.25);
+        else if (act === 'reset') {
+          Object.assign(view, initView);
+          draw();
+        } else if (act === 'download') {
+          const link = document.createElement('a');
+          link.download = `${(spec.title || 'math-graph').replace(/\s+/g, '_')}.png`;
+          link.href = canvas.toDataURL('image/png');
+          link.click();
+        }
+      });
+    });
+
+    // アコーディオン展開時やウィンドウリサイズ時に自動で鮮明に再描画
+    if (window.ResizeObserver) {
+      const ro = new ResizeObserver(() => draw());
+      ro.observe(widgetEl);
+    }
+    requestAnimationFrame(() => draw());
   }
 
   bindEditorPreview(textareaId, previewId) {
